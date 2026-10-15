@@ -1,5 +1,6 @@
 
 from pathlib import Path
+import numpy as np
 import pandas as pd
 
 
@@ -11,8 +12,7 @@ import pandas as pd
 #df = pd.read_csv(csv_path)
 
 #df_copy = df.copy()
-import numpy as np
-import pandas as pd
+
 csv_path = Path(__file__).with_name("cs-training.csv")
 print(f"CSV 읽는 중: {csv_path}", flush=True)
 df = pd.read_csv(csv_path)
