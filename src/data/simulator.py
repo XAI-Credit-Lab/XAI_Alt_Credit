@@ -1,4 +1,3 @@
-
 from pathlib import Path #파일 경로를 다루는 객체
 import numpy as np # 난수 생성, 수치 계산
 import pandas as pd # CSV/데이터프레임 처리
@@ -72,6 +71,7 @@ def is_thin_filer(df):
     return delinq_missing | short_history
 
 # 나이를 AGE_BINS·AGE_LABELS 기준 3구간(~34, 35~54, 55+)으로 잘라 문자열로 저장
+'''공정성 검증'''
 def add_age_group(df):
     df["age_group"] = pd.cut(df["age"], bins=AGE_BINS, labels=AGE_LABELS).astype(str)
     return df
@@ -88,7 +88,7 @@ def add_gender_and_persona(df, rng):
 
     # 페르소나 라벨 (숫자 코드)
     df["persona"] = PERSONA_CODE["일반"] # 기본값: 일반(1)
-    df.loc[df["age"].between(20, 25), "persona"] = PERSONA_CODE["사회초년생"] # 20~25세는 사회초년생(2)
+    df.loc[df["age"].between(20, 29), "persona"] = PERSONA_CODE["사회초년생"] # 20~29세는 사회초년생(2)
     df.loc[(df["gender"] == 1) & mid_age & has_dependents
            & (income_missing | (df["MonthlyIncome"] < 2000)), "persona"] = PERSONA_CODE["주부"] # 여성, 30~59세, 부양가족 있음, 소득 결측 또는 2000 미만일 경우 주부(3)
     return df
@@ -137,6 +137,8 @@ def add_approval_label(df, t, f, rng, bias_ratio, approval_rate=0.7):
     df["approved"] = (score >= thr).astype(int)
     return df
 
+
+
 # 전체 파이프라인: 성별·페르소나·연령대 → 대안 변수 생성(편향 포함) → 씬파일러 판정 → 승인 여부 생성
 # [피드백3] 변경: feature_bias_ratio 삭제, bias_ratio 하나가 승인 감점 + 대안변수 편향을 함께 조절 
 def add_alt_features(df, seed=42, thin_filer_ratio=0.2, bias_ratio=0.0, approval_rate=0.7):
@@ -152,12 +154,12 @@ def add_alt_features(df, seed=42, thin_filer_ratio=0.2, bias_ratio=0.0, approval
     def z(feature, rho):                              # 부도와 상관된 잠재값 - 그룹 편향(bias_ratio × FEATURE_BIAS)
         return _corr_latent(t, rho, f, rng) - bias_ratio * _group_shift(df, feature)
 
-    # [피드백4] 변경: 부도와의 상관을 하한(약 0.3)으로 낮춤 (기존 0.35~0.60 → AUC 0.99로 과대)
-    df["telecom_payment_rate"]  = np.clip(0.88 + 0.10 * z("telecom_payment_rate", -0.30), 0, 1)   # 평균 0.88, 표준편차 약 0.1, 부도와 음의 상관(-0.30)
-    df["utility_payment_rate"]  = np.clip(0.90 + 0.09 * z("utility_payment_rate", -0.28), 0, 1)   # 평균 0.90, 표준편차 약 0.09, 상관 -0.28
-    df["spending_consistency"]  = np.clip(70 + 15 * z("spending_consistency", -0.25), 0, 100)     # 평균 70, 표준편차 15, 상관 -0.25, 0~100으로 자름
-    df["regular_payment_count"] = rng.poisson(np.exp(1.2 + 0.35 * z("regular_payment_count", 0.30)))  # 정기결제 건수: 평균 약 3.3건, 부도와 양의 상관(+0.30, 할부·상환 부담 가정)
-    df["app_login_frequency"]   = rng.poisson(np.exp(2.6 + 0.40 * z("app_login_frequency", -0.30)))   # 앱 로그인 빈도: 평균 약 13.5회, 부도와 음의 상관(-0.30)
+    # [피드백4] 변경
+    df["telecom_payment_rate"]  = np.clip(0.88 + 0.10 * z("telecom_payment_rate", -0.31), 0, 1)   # 평균 0.88, 표준편차 약 0.1, 부도와 음의 상관(-0.31)
+    df["utility_payment_rate"]  = np.clip(0.90 + 0.09 * z("utility_payment_rate", -0.31), 0, 1)   # 평균 0.90, 표준편차 약 0.09, 상관 -0.31
+    df["spending_consistency"]  = np.clip(70 + 15 * z("spending_consistency", -0.32), 0, 100)     # 평균 70, 표준편차 15, 상관 -0.32, 0~100으로 자름
+    df["regular_payment_count"] = rng.poisson(np.exp(1.2 + 0.35 * z("regular_payment_count", 0.45)))  # 정기결제 건수: 평균 약 3.3건, 부도와 양의 상관(+0.45, 할부·상환 부담 가정)
+    df["app_login_frequency"]   = rng.poisson(np.exp(2.6 + 0.40 * z("app_login_frequency", -0.53)))   # 앱 로그인 빈도: 평균 약 13.5회, 부도와 음의 상관(-0.53)
 
     df = inject_thin_filers(df, rng, thin_filer_ratio)
     df = add_approval_label(df, t, f, rng, bias_ratio, approval_rate)
@@ -186,9 +188,42 @@ def alt_feature_report(df):
     print(pd.concat([by_gender, by_age]).round(3).to_string())
 
 
+# [스펙 확인] 대안변수와 타깃(SeriousDlqin2yrs) 간 상관계수가 0.3~0.5 범위인지 df.corr()로 확인
+def corr_report(df, target="SeriousDlqin2yrs", low=0.3, high=0.5):
+    """대안변수 + 타깃의 상관행렬(df.corr())과 타깃 상관의 스펙 충족 여부를 출력"""
+    cols = ["telecom_payment_rate", "utility_payment_rate", "spending_consistency",
+            "regular_payment_count", "app_login_frequency"]
+
+    # 1) 상관행렬: 대안변수 5개 + 타깃 (6×6)
+    corr_matrix = df[cols + [target]].corr()
+    print("[상관행렬 df.corr()] 대안변수 + 타깃")
+    print(corr_matrix.round(3).to_string())
+
+    # 2) 타깃 열만 꺼내서 스펙(|r| 0.3~0.5) 충족 여부 판정
+    corr = corr_matrix[target].drop(target)
+    report = pd.DataFrame({
+        "상관계수": corr.round(3),
+        "|상관계수|": corr.abs().round(3),
+        "방향": np.where(corr > 0, "+", "-"),
+        "스펙 충족": np.where(corr.abs().between(low, high), "O", "X"),
+    })
+    print(f"\n[대안변수-타깃 상관계수 리포트] 스펙: |r| {low}~{high}")
+    print(report.to_string())
+    print(f"  충족: {(report['스펙 충족'] == 'O').sum()}/{len(cols)}개")
+
+    # 스펙 미충족이면 여기서 실행을 멈춤 (어느 변수가 벗어났는지 같이 출력)
+    for col, r in corr.items():
+        assert low <= abs(r) <= high, f"스펙 위반: {col}의 |상관계수| {abs(r):.3f}가 {low}~{high} 범위를 벗어남"
+    return corr_matrix, report
+
+
 print("대안 변수 생성 중...", flush=True)
 result = add_alt_features(df, thin_filer_ratio=0.2, bias_ratio=0.0)
 print(f"씬파일러 비율: {result['is_thin_filer'].mean():.1%}", flush=True)
+
+# ★ [스펙 확인] 상관행렬 + 스펙 충족 리포트 (bias_ratio=0 기준), 보고서용 CSV 저장
+corr_matrix, corr_table = corr_report(result)
+corr_matrix.round(3).to_csv(Path(__file__).with_name("상관행렬.csv"), encoding="utf-8-sig")
 
 output_path = Path(__file__).with_name("결과.csv")
 print(f"결과 저장 중: {output_path}", flush=True)
