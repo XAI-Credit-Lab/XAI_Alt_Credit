@@ -45,6 +45,8 @@ TEST_SIZE = 0.15
 
 BIAS_PENALTY = {"female": 1.0, "~34": 1.0, "55+": 0.5}
 
+'''
+# 기존 코드
 FEATURE_BIAS = {
     "telecom_payment_rate":  {"female": 0.75, "55+": 0.2},               # 통신비가 배우자·자녀 명의라 기록 불리
     "utility_payment_rate":  {"female": 0.75, "~34": 0.5},                    # 공과금이 본인 명의 아님(주부·부모와 동거)
@@ -59,6 +61,30 @@ RHO = {
     "spending_consistency":  -0.35,   # 2차 -0.41 / 최초 -0.32
     "regular_payment_count": 0.48,    # 2차 0.56 / 최초 0.45 (Poisson 변환에서 상관이 많이 약해짐)
     "app_login_frequency":   -0.57,   # 2차 -0.69 / 최초 -0.53 (Poisson 변환에서 상관이 많이 약해짐)
+}
+'''
+# TODO : FEATURE_BIAS와 RHO 값을 기존 코드로 할지 새로운 코드로 할지 검토 부탁!
+# TODO : 둘다 조건에 충족하지만 고민하는 이유는 카톡에 보냄
+
+# 대안변수 편향 (가정값): 불리한 집단의 잠재값을 몇 표준편차 낮출지. 실제 = bias_ratio × 값
+# 부도와 무관하게 그룹만 보고 낮춤 → 모델이 부도 라벨로 학습해도 이 편향을 배우게 됨
+# female 편향은 5개 변수 모두에 같은 방향(불리한 쪽)으로 넣음
+# → 일부 변수에만 넣으면 모델이 "이 변수들만 낮은 패턴"으로 성별을 알아채 편향을 보정해 버림
+'''새로운 코드'''
+FEATURE_BIAS = {
+    "telecom_payment_rate":  {"female": 0.5, "55+": 0.2},               # 통신비가 배우자·자녀 명의라 기록 불리
+    "utility_payment_rate":  {"female": 0.5, "~34": 0.5},               # 공과금이 본인 명의 아님(주부·부모와 동거)
+    "spending_consistency":  {"female": 0.5, "~34": 0.4, "55+": 0.3},   # 경력단절·사회초년생·은퇴로 소비 변동
+    "regular_payment_count": {"female": -0.5, "~34": -0.3},             # 부도와 +상관이라 불리하게 = 늘림 (가계 고정지출을 본인 명의로 결제)
+    "app_login_frequency":   {"female": 0.5, "55+": 0.4},               # 가계 금융을 배우자 명의 앱으로 관리 / 고령층 디지털 격차
+}
+
+RHO = {
+    "telecom_payment_rate":  -0.34,
+    "utility_payment_rate":  -0.32,
+    "spending_consistency":  -0.35,
+    "regular_payment_count":  0.48,   # Poisson 변환에서 상관이 많이 약해져 크게 잡음
+    "app_login_frequency":   -0.59,   # Poisson 변환에서 상관이 많이 약해져 크게 잡음
 }
 
 # 페르소나 코드 (CSV 저장용): 1: 일반, 2: 사회초년생, 3: 주부
