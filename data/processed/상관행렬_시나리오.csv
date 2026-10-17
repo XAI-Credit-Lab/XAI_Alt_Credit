@@ -1,7 +1,0 @@
-﻿,telecom_payment_rate,utility_payment_rate,spending_consistency,regular_payment_count,app_login_frequency,SeriousDlqin2yrs
-telecom_payment_rate,1.0,0.402,0.419,-0.011,0.347,-0.329
-utility_payment_rate,0.402,1.0,0.421,-0.025,0.321,-0.327
-spending_consistency,0.419,0.421,1.0,-0.023,0.352,-0.33
-regular_payment_count,-0.011,-0.025,-0.023,1.0,-0.041,0.352
-app_login_frequency,0.347,0.321,0.352,-0.041,1.0,-0.32
-SeriousDlqin2yrs,-0.329,-0.327,-0.33,0.352,-0.32,1.0
