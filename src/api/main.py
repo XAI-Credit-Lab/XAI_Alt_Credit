@@ -22,31 +22,41 @@ def health():
 
 @router.post("/predict", response_model = model.predict_response)
 def predict(data : model.predict_request):
-    #추가 예정
+    # 모델 코드 위치 필요
+    # 추가 예정
     return
 
 @router.post("/explain", response_model = model.explain_response)
 def explain(data : model.explain_request):
+    # sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))) #상위 폴더 접근
+    # from explainer import func
     # 추가 예정
     return
 
 @router.get("/fairness", response_model = model.fairness_response)
 def fairness():
+    # sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))) #상위 폴더 접근
+    # from fairness import non_mitigation_verssion
     # 추가 예정
     return
 
 @router.get("/fairness/mitigation", response_model = model.fairness_mitigation_response)
 def fairness_mitigation():
+    # sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))) #상위 폴더 접근
+    # from fairness import mitigation_verssion
     # 추가 예정
     return
 
 @router.get("/metrics", response_model = model.metrics_response)
 def metrics():
+    # mlflow의 metric 쓰는것으로 추정
     # 추가 예정
     return
 
 @router.get("/anova", response_model = model.anova_response)
 def anova():
+    # sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))) #상위 폴더 접근
+    # from statistics.anova import func_name
     # 추가 예정
     return
 
