@@ -1,0 +1,17 @@
+services:
+  API:
+    build: ./src/api
+    container_name: api #
+    ports: ["8000:8000"]
+
+  MLflow: # MLflow UI
+    build: #
+    container_name: mlflow
+    ports: ["5000:5000"]
+
+  Dashboard:
+    build: ./src/dashboard
+    container_name: dashboard
+    ports: ["8501:8501"]
+    environment: #
+    depends_on: [API]
