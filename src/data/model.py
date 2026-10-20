@@ -26,8 +26,6 @@ XAI 기반 대안신용평가 시스템 - 신용평가 모델 학습 / 평가 / 
 실행: python src/data/model.py  (또는 VS Code 실행 버튼)
 """
 
-# TODO : 이것도 낮에 수정할 예정
-
 from __future__ import annotations
 
 import argparse

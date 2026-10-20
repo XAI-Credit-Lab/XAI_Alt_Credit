@@ -27,7 +27,7 @@ XAI 기반 대안신용평가 시스템 - 전처리 및 데이터 분할 모듈
 
 요구 사항: scikit-learn >= 1.2 (sparse_output, set_output 사용)
 """
-# 코드 수정은 낮에 할 예정
+
 from __future__ import annotations
 
 from dataclasses import dataclass
