@@ -56,8 +56,11 @@ XAI 기반 대안신용평가 시스템 - 대안 데이터 시뮬레이터
 import logging              # loader의 로그(컬럼명·타입·결측치)와 스펙 위반 경고 출력용
 from pathlib import Path    # 파일 경로를 다루는 객체
 import sys
+from unittest import result
 import numpy as np          # 난수 생성, 수치 계산
-import pandas as pd         # CSV/데이터프레임 처리
+import pandas as pd
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.model_selection import train_test_split         # CSV/데이터프레임 처리
 
 # 연령 구간 정의와 DI 계산 함수는 공정성 모듈에서 가져옴
 # → 시뮬레이터 리포트와 공정성 검증이 같은 정의를 써야 보고서의 DI 값이 어긋나지 않음
@@ -94,7 +97,7 @@ TRAD_INFO_COLS = DELINQ_COLS + [
     "NumberOfOpenCreditLinesAndLoans",
     "NumberRealEstateLoansOrLines",
 ]
-THIN_INFO_LOSS = 0.8   # 씬파일러의 기존 변수 값 중 80%를 정보 없는 값으로 교체 (가정값)
+THIN_INFO_LOSS = 0.5   # 씬파일러의 기존 변수 값 중 50%를 정보 없는 값으로 교체 (가정값)
 
 # 모델 피처가 아닌 컬럼 (라벨·보호 속성·대리변수) - 전처리 단계에서 제외할 때 참고
 NON_FEATURE_COLS = ["approved", "gender", "persona", "age", "age_group"]
@@ -117,22 +120,51 @@ BIAS_PENALTY = {"female": 1.0, "~34": 0.7, "55+": 0.8}
 # 부도와 무관하게 그룹만 보고 낮춤 → 모델이 부도 라벨로 학습해도 이 편향을 배우게 됨
 # female 편향은 5개 변수 모두에 같은 방향(불리한 쪽)으로 넣음
 # → 일부 변수에만 넣으면 모델이 "이 변수들만 낮은 패턴"으로 성별을 알아채 편향을 보정해 버림
+'''
 FEATURE_BIAS = {
     "telecom_payment_rate":  {"female": 0.5, "55+": 0.5},               # 통신비가 배우자·자녀 명의라 기록 불리
     "utility_payment_rate":  {"female": 0.5, "~34": 1.0},               # 공과금이 본인 명의 아님(주부·부모와 동거)
     "spending_consistency":  {"female": 0.5, "~34": 0.8, "55+": 0.7},   # 경력단절·사회초년생·은퇴로 소비 변동
     "regular_payment_count": {"female": -0.5, "~34": -0.6},             # 부도와 +상관이라 불리하게 = 늘림 (가계 고정지출을 본인 명의로 결제)
-    "app_login_frequency":   {"female": 0.5, "55+": 1.2},               # 가계 금융을 배우자 명의 앱으로 관리 / 고령층 디지털 격차
+    "app_login_frequency":   {"female": 0.5, "55+": 0.6},               # 가계 금융을 배우자 명의 앱으로 관리 / 고령층 디지털 격차
+}
+'''
+
+# FEATURE_BIAS: female 값만 3배 (0.5 → 1.5, 정기결제는 -0.5 → -1.5), 나머지는 그대로
+FEATURE_BIAS = {
+    "telecom_payment_rate":  {"female": 1.5, "55+": 0.5},
+    "utility_payment_rate":  {"female": 1.5, "~34": 1.0},
+    "spending_consistency":  {"female": 1.5, "~34": 0.8, "55+": 0.7},
+    "regular_payment_count": {"female": -1.5, "~34": -0.6},
+    "app_login_frequency":   {"female": 1.5, "55+": 0.6},
 }
 
-# 대안변수별 잠재값과 타깃(부도)의 목표 상관계수 (calibrate_rho()로 재보정)
-RHO = {
-    "telecom_payment_rate":  -0.34,
-    "utility_payment_rate":  -0.32,
-    "spending_consistency":  -0.35,
-    "regular_payment_count":  0.48,   # Poisson 변환에서 상관이 많이 약해져 크게 잡음
-    "app_login_frequency":   -0.66,   # Poisson 변환에서 상관이 많이 약해져 크게 잡음
+LAM = 0.8          # 공통 요인 비중 (0.3 → 0.8): 대안변수끼리 정보가 겹쳐, 합쳤을 때 AUC가 덜 오름
+TAIL_PI = 0.3      # 부도자 중 '꼬리'(값이 크게 나쁜 집단)에 들어가는 비율 (가정값)
+TAIL_SHARE = 0.85  # 변수끼리 같은 부도자가 꼬리에 들어갈 확률 → 높을수록 합친 AUC가 덜 오름
+
+'''
+# 몸통 상관: 약하게 유지 (편향이 모델에 전달되는 통로). 부호 = 부도와의 상관 방향
+RHO_BODY = {
+    "telecom_payment_rate":  -0.15,
+    "utility_payment_rate":  -0.15,
+    "spending_consistency":  -0.15,
+    "regular_payment_count":  0.15,
+    "app_login_frequency":   -0.15,
 }
+'''
+# 몸통 상관: 0.15 → 0.25 (부호는 그대로)
+RHO_BODY = {
+    "telecom_payment_rate":  -0.25,
+    "utility_payment_rate":  -0.25,
+    "spending_consistency":  -0.25,
+    "regular_payment_count":  0.25,
+    "app_login_frequency":   -0.25,
+}
+
+# 꼬리 이동 폭(표준편차 단위): |r| 0.3~0.5를 맞추는 손잡이. calibrate_tail_delta()로 재보정
+TAIL_DELTA = {c: 4.5 for c in ALT_COLS}
+TAIL_DELTA["app_login_frequency"] = 20.0
 
 # 페르소나 코드 (CSV 저장용): 1: 일반, 2: 사회초년생, 3: 주부
 PERSONA_CODE = {"일반": 1, "사회초년생": 2, "주부": 3}
@@ -152,9 +184,26 @@ PERSONA_WEIGHT = {PERSONA_CODE["일반"]: 1.0,
 def _corr_latent(t, rho, f, rng, lam=0.3):
     """타깃 t와 상관계수가 약 rho인 표준정규 잠재값 생성"""
     s = (t - t.mean()) / t.std()                                           # 표준화한 타깃 (평균 0, 분산 1)
-    e = np.sqrt(lam) * f + np.sqrt(1 - lam) * rng.standard_normal(len(t))  # 노이즈 (lam 비중은 공통 요인 f, 나머지는 개별 난수)
+    #e = np.sqrt(lam) * f + np.sqrt(1 - lam) * rng.standard_normal(len(t))  # 노이즈 (lam 비중은 공통 요인 f, 나머지는 개별 난수)
+    e = np.sqrt(lam) * -np.sign(rho) * f + np.sqrt(1 - lam) * rng.standard_normal(len(t))  # f를 위험 방향에 맞춰 넣음 (rho가 +인 변수는 -f)
     return rho * s + np.sqrt(1 - rho**2) * e                               # 타깃과의 상관 ≈ rho
 
+def _tail_flag_maker(t, rng, pi=TAIL_PI, share=TAIL_SHARE):
+    """변수마다 '꼬리' 대상자를 뽑는 함수를 반환. share 확률로 공통 대상자를 공유"""
+    n = len(t)
+    base = (t == 1) & (rng.random(n) < pi)                    # 여러 변수에서 공통으로 나쁜 부도자
+    def next_flag():
+        own = (t == 1) & (rng.random(n) < pi)                 # 이 변수에서만 나쁜 부도자
+        return np.where(rng.random(n) < share, base, own)
+    return next_flag
+
+
+def _alt_latent(t, rho_body, delta, flag, f, rng, lam=LAM):
+    """몸통(약한 상관) + 꼬리(일부 부도자만 크게 이동) 잠재값"""
+    s = (t - t.mean()) / t.std()
+    e = np.sqrt(lam) * -np.sign(rho_body) * f + np.sqrt(1 - lam) * rng.standard_normal(len(t))
+    z = rho_body * s + np.sqrt(1 - rho_body**2) * e
+    return z + np.sign(rho_body) * delta * flag               # 위험한 방향으로 꼬리 이동
 
 def _group_shift(df, feature):
     """해당 대안변수에 대해 각 사람이 받는 편향 크기(표준편차 단위)"""
@@ -285,14 +334,18 @@ def add_alt_features(df, seed=42, thin_filer_ratio=0.2, bias_ratio=0.0, approval
     df = add_age_group(df)                            # 연령대 (편향 주입·리포트 공통 구간)
     df = add_persona(df)                              # 페르소나 라벨 (성별이 먼저 있어야 함)
 
-    def z(feature, rho):                              # 부도와 상관된 잠재값 - 그룹 편향(bias_ratio × FEATURE_BIAS)
-        return _corr_latent(t, rho, f, rng) - bias_ratio * _group_shift(df, feature)
+    next_flag = _tail_flag_maker(t, rng)
 
-    df["telecom_payment_rate"]  = np.clip(0.88 + 0.10 * z("telecom_payment_rate", RHO["telecom_payment_rate"]), 0, 1)        # 평균 0.88, 표준편차 약 0.1, 0~1로 자름
-    df["utility_payment_rate"]  = np.clip(0.90 + 0.09 * z("utility_payment_rate", RHO["utility_payment_rate"]), 0, 1)        # 평균 0.90, 표준편차 약 0.09, 0~1로 자름
-    df["spending_consistency"]  = np.clip(70 + 15 * z("spending_consistency", RHO["spending_consistency"]), 0, 100)          # 평균 70, 표준편차 15, 0~100으로 자름
-    df["regular_payment_count"] = rng.poisson(np.exp(1.2 + 0.35 * z("regular_payment_count", RHO["regular_payment_count"])))  # 정기결제 건수: 평균 약 3.5건, 부도와 양의 상관(할부·상환 부담 가정)
-    df["app_login_frequency"]   = rng.poisson(np.exp(2.6 + 0.40 * z("app_login_frequency", RHO["app_login_frequency"])))      # 앱 로그인 빈도: 평균 약 14.6회, 부도와 음의 상관
+    def z(feature):   # 몸통+꼬리 잠재값 - 그룹 편향(bias_ratio × FEATURE_BIAS)
+        return (_alt_latent(t, RHO_BODY[feature], TAIL_DELTA[feature], next_flag(), f, rng)
+                - bias_ratio * _group_shift(df, feature))
+
+    df["telecom_payment_rate"]  = np.clip(0.88 + 0.10 * z("telecom_payment_rate"), 0, 1)        # 평균 0.88, 표준편차 약 0.1, 0~1로 자름
+    df["utility_payment_rate"]  = np.clip(0.90 + 0.09 * z("utility_payment_rate"), 0, 1)        # 평균 0.90, 표준편차 약 0.09, 0~1로 자름
+    df["spending_consistency"]  = np.clip(70 + 12 * z("spending_consistency"), 0, 100)          # 평균 70, 표준편차 15, 0~100으로 자름
+    df["regular_payment_count"] = rng.poisson(np.exp(1.2 + 0.35 * z("regular_payment_count")))  # 정기결제 건수: 평균 약 3.5건, 부도와 양의 상관(할부·상환 부담 가정)
+    #df["app_login_frequency"]   = rng.poisson(np.exp(2.6 + 0.40 * z("app_login_frequency")))      # 앱 로그인 빈도: 평균 약 14.6회, 부도와 음의 상관
+    df["app_login_frequency"] = rng.poisson(np.exp(np.log(60) + 0.15 * z("app_login_frequency")))
 
     df = inject_thin_filers(df, rng, thin_filer_ratio, thin_info_loss)
     df = add_approval_label(df, t, f, rng, bias_ratio, approval_rate)
@@ -343,6 +396,21 @@ def feature_di_report(df, target="SeriousDlqin2yrs", approval_rate=0.7, verbose=
         print(f"  [대안변수 기준] 연령대 DI: {fmt_age_di(age_di(df, approved))}")   # 연령대 DI (공정성 모듈)
     return di
 
+def model_di_report(df, target="SeriousDlqin2yrs", approval_rate=0.7, seed=42, verbose=True):
+    """기존+대안 변수로 간이 모델 학습 → 테스트셋 승인 → 성별 DI, 연령대 DI 반환
+      (model_di_report 만든 이유 : 보정 반복을 빠르게 돌리기 위해)"""
+    drop = set(NON_FEATURE_COLS) | {target, "is_thin_filer", "Unnamed: 0"}   # 전처리기 피처 목록과 맞출 것
+    feats = [c for c in df.columns if c not in drop]
+    tr, te = train_test_split(df.index, test_size=TEST_SIZE, stratify=df[target], random_state=seed)
+    m = HistGradientBoostingClassifier(random_state=seed).fit(df.loc[tr, feats], df.loc[tr, target])
+    risk = m.predict_proba(df.loc[te, feats])[:, 1]
+    approved = risk <= np.quantile(risk, approval_rate)
+    d = df.loc[te]
+    g, a = gender_di(d, approved), age_di(d, approved)
+    if verbose:
+        print(f"  [모델 기준] 성별 DI(여/남): {g:.3f}" + ("  ← 0.8 미만" if g < 0.8 else ""))
+        print(f"  [모델 기준] 연령대 DI: {fmt_age_di(a)}")
+    return g, a
 
 def alt_feature_report(df):
     """성별·연령대별 대안변수 평균 출력 (편향이 의도한 방향으로 들어갔는지 확인)"""
@@ -469,38 +537,34 @@ def feature_bias_sweep(df, scales=(0.5, 0.75, 1, 1.25, 1.5), bias_ratio=SCENARIO
                             for feat, d in original.items()}
             r = add_alt_features(df, bias_ratio=bias_ratio)
             di = feature_di_report(r, verbose=False)
-            print(f"  FEATURE_BIAS({','.join(groups)}) ×{s}: 성별 DI = {di:.3f}" + ("  ← 0.8 미만" if di < 0.8 else ""))
+            print(f"  FEATURE_BIAS({','.join(groups)}) ×{s}: 성별 DI = {di:.3f}" + ("  ← 0.8 미만!!" if di < 0.8 else ""))
     finally:
         FEATURE_BIAS = original   # 오류가 나도 원래 값으로 복구
 
-
-def calibrate_rho(df, bias_ratio=SCENARIO_BIAS_RATIO, target=0.33, grid=np.arange(0.25, 0.76, 0.01),
-                  key="SeriousDlqin2yrs"):
-    """RHO 추천값(dict)을 반환하고 통제/시나리오 상관을 출력 (끝나면 RHO 원래 값으로 복구)"""
-    global RHO
-    original = RHO
-    sign = {c: np.sign(v) for c, v in original.items()}   # 상관 방향(+/-)은 유지
+def calibrate_tail_delta(df, target=0.36, grid=np.arange(2.0, 7.01, 0.25),
+                         cols=ALT_COLS, key="SeriousDlqin2yrs"):
+    """통제/시나리오 중 낮은 쪽 |r|이 target에 가장 가까운 TAIL_DELTA를 변수별로 추천"""
+    global TAIL_DELTA
+    original = TAIL_DELTA
     rows = []
     try:
-        for r in grid:
-            RHO = {c: sign[c] * r for c in ALT_COLS}            # 모든 변수를 같은 크기 r로 두고 한 번에 측정
-            ctrl = add_alt_features(df, bias_ratio=CONTROL_BIAS_RATIO)[ALT_COLS].corrwith(df[key]).abs()
-            scen = add_alt_features(df, bias_ratio=bias_ratio)[ALT_COLS].corrwith(df[key]).abs()
-            rows.append(pd.DataFrame({"rho": r, "통제": ctrl, "시나리오": scen}))
+        for d in grid:
+            TAIL_DELTA = {**original, **{c: d for c in cols}}          # cols만 바꾸고 나머지는 유지
+            ctrl = add_alt_features(df, bias_ratio=CONTROL_BIAS_RATIO)[cols].corrwith(df[key]).abs()
+            scen = add_alt_features(df, bias_ratio=SCENARIO_BIAS_RATIO)[cols].corrwith(df[key]).abs()
+            rows.append(pd.DataFrame({"delta": d, "통제": ctrl, "시나리오": scen}))
     finally:
-        RHO = original   # 오류가 나도 원래 값으로 복구
+        TAIL_DELTA = original   # 오류가 나도 원래 값으로 복구
 
-    # 통제/시나리오 중 상관이 낮은 쪽이 target에 가장 가까운 rho를 변수별로 선택
     table = pd.concat(rows).rename_axis("변수").reset_index()
     table["낮은쪽"] = table[["통제", "시나리오"]].min(axis=1)
     best = table.loc[(table["낮은쪽"] - target).abs().groupby(table["변수"]).idxmin()].set_index("변수")
-    suggestion = {c: round(float(sign[c] * best.loc[c, "rho"]), 2) for c in ALT_COLS}
+    suggestion = {c: float(best.loc[c, "delta"]) for c in cols}
 
-    print(f"[rho 재보정] bias_ratio={bias_ratio}, 목표: 낮은 쪽 |r|={target}")
-    print(best[["rho", "통제", "시나리오"]].round(3).to_string())
-    print("  추천 RHO =", suggestion)
+    print(f"[TAIL_DELTA 보정] 목표: 낮은 쪽 |r|={target}")
+    print(best[["delta", "통제", "시나리오"]].round(3).to_string())
+    print("  추천 TAIL_DELTA =", suggestion)
     return suggestion
-
 
 def calibrate_bias_ratio(df, target_di=0.8, metric="label", grid=np.round(np.arange(0, 1.01, 0.05), 2), tol=0.02):
     """목표 성별 DI에 가장 가까운 bias_ratio를 찾아 반환 (SCENARIO_BIAS_RATIO를 정할 때 사용)
@@ -566,6 +630,7 @@ def main(thin_filer_ratio=0.2, tune=False):
 
         approval_report(result)      # 라벨 기준 DI (BIAS_PENALTY 영향)
         feature_di_report(result)    # 대안변수 기준 DI (FEATURE_BIAS 영향)
+        model_di_report(result)      # 모델 기준 DI (최종 판단 기준)  ← 추가
         alt_feature_report(result)   # 그룹별 대안변수 평균
 
         output_path = out_dir / f"결과_{name}.csv"
@@ -579,11 +644,14 @@ def main(thin_filer_ratio=0.2, tune=False):
 
     # 보정용 탐색 (값을 다시 정할 때만 tune=True)
     if tune:
-        print(f"\n[FEATURE_BIAS female 배율 탐색, bias_ratio={SCENARIO_BIAS_RATIO}]")
-        feature_bias_sweep(df)
-        calibrate_rho(df)
-        calibrate_bias_ratio(df, target_di=0.8)   # 목표 DI에 맞는 bias_ratio 탐색
+        print(f"\n[FEATURE_BIAS 배율 탐색, bias_ratio={SCENARIO_BIAS_RATIO}]")
+        feature_bias_sweep(df, groups=("~34",))
+        feature_bias_sweep(df, groups=("55+",))   # 참고용 (값은 바꾸지 않음)
 
+        # 꼬리 폭 보정: 로그인은 필요한 범위가 달라서 따로 실행
+        calibrate_tail_delta(df, cols=["telecom_payment_rate", "utility_payment_rate",
+                                       "spending_consistency", "regular_payment_count"])
+        calibrate_tail_delta(df, grid=np.arange(10, 24.01, 1.0), cols=["app_login_frequency"])
 
 # 직접 실행할 때만 동작 (preprocessor.py 등에서 import할 때는 실행 안 됨)
 if __name__ == "__main__":
