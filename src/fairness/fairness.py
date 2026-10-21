@@ -1,5 +1,5 @@
 """
-src/fairness/metrics.py
+src/fairness/fairness.py
 공정성 지표 모듈 (초안 - 시뮬레이터에서 쓰는 부분만 먼저 작성)
 
 시뮬레이터(src/data/simulator.py)가 import하는 이름:
