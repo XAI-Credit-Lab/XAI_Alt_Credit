@@ -1,6 +1,6 @@
 {
   "model_version": "1.0",
-  "trained_at": "2026-10-23T20:53:44",
+  "trained_at": "2026-10-23T22:14:13",
   "best_model": {
     "algorithm": "logistic_regression",
     "imbalance": "class_weight",
