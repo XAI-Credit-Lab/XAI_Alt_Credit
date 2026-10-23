@@ -1,11 +1,14 @@
 {
   "model_version": "1.0",
-  "trained_at": "2026-10-18T05:59:02",
+  "trained_at": "2026-10-23T20:53:44",
   "best_model": {
     "algorithm": "logistic_regression",
     "imbalance": "class_weight",
     "file": "logistic_regression_v1.0.pkl",
-    "threshold": 0.9029672436292016
+    "threshold": 0.9029672436292016,
+    "approval_rate": 0.7,
+    "approval_cutoff": 0.05828544030735944,
+    "test_approval_rate": 0.6952444444444444
   },
   "feature_names": [
     "RevolvingUtilizationOfUnsecuredLines",

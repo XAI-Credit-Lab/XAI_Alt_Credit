@@ -13,17 +13,25 @@ XAI 기반 대안신용평가 시스템 - 신용평가 모델 학습 / 평가 / 
   [성능 목표]
   - Test AUC-ROC >= 0.78, Test KS >= 0.28, 씬파일러 AUC 향상 >= +0.03, PSI < 0.1
     -> 실행 마지막에 PASS/FAIL 표로 출력, models/model_meta_v1.0.json 에 저장 (/metrics API용)
+  [승인 판정 기준] 추가
+  - 승인율 70% (시뮬레이터 add_approval_label의 과거 승인율과 동일)
+  - Validation 부도확률의 하위 70% 지점을 approval_cutoff 로 저장
+    -> /predict 에서 "부도확률 <= approval_cutoff 이면 승인"
+    -> /fairness 에서도 같은 기준으로 승인 여부를 만들어야 과거 승인 기록과 비교 가능
+  - 기존 threshold(F1 최대 지점)는 F1 평가용으로만 남겨 둠
   [MLflow]
   - 실험(알고리즘 x 불균형 기법) 6개를 각각 run으로 기록: params, metrics(AUC/KS/F1), artifacts(모델 파일)
   - 최종 모델을 Model Registry에 등록하고 Staging/Production 태그 부여
 
 데이터 사용 원칙
   - Train(70%) : 5-Fold CV + 최종 학습
-  - Validation(15%) : 6개 실험 중 최종 모델 선택, F1 임계값 결정
-  - Test(15%) : 최종 성능 보고에만 사용 (선택에 쓰지 않음)
+  - Validation(15%) : 6개 실험 중 최종 모델 선택, F1 임계값·승인 기준값 결정
+  - Test(15%) : 최종 성능 보고에만 사용 (선택·기준 결정에 쓰지 않음)
 
 필요 패키지: scikit-learn>=1.2, xgboost, lightgbm, imbalanced-learn, mlflow, joblib
-실행: python src/data/model.py  (또는 VS Code 실행 버튼)
+실행: 프로젝트 최상위 폴더에서  python -m src.data.model
+      (python src/data/model.py 로 실행하면 저장된 전처리기가 'preprocessor' 모듈 이름으로
+       기록되어, API에서 src.data.preprocessor 로 불러올 때 ModuleNotFoundError가 날 수 있음)
 """
 
 from __future__ import annotations
@@ -51,18 +59,18 @@ import mlflow
 import mlflow.sklearn
 from mlflow.tracking import MlflowClient
 
-try:  # 패키지로 import 할 때 (예: from src.data.model import ...)
+try:  # 패키지로 import 할 때 (예: python -m src.data.model)
     from .preprocessor import (DEFAULT_INPUT, DEFAULT_SAVE, PROJECT_ROOT,
                                RANDOM_STATE, CreditPreprocessor, SplitData)
-except ImportError:  # 스크립트로 직접 실행할 때
+except ImportError:  # 스크립트로 직접 실행할 때 (예: python src/data/model.py)
     from preprocessor import (DEFAULT_INPUT, DEFAULT_SAVE, PROJECT_ROOT,
                               RANDOM_STATE, CreditPreprocessor, SplitData)
 
 # ----------------------------------------------------------------------
 # 설정
 # ----------------------------------------------------------------------
-MODEL_VERSION = "1.0"
-MODEL_DIR = PROJECT_ROOT / "models"
+MODEL_VERSION = "1.0"                 # 파일명에 들어가는 버전 (재학습 시 여기만 변경)
+MODEL_DIR = PROJECT_ROOT / "models"   # 모델 저장 폴더
 
 # 시뮬레이터가 만든 대안변수 5종 (씬파일러 AUC 향상 비교 시 '미포함 모델'에서 제외)
 ALT_COLS = [
@@ -79,15 +87,19 @@ ALGORITHMS = ["logistic_regression", "xgboost", "lightgbm"]
 IMBALANCE_METHODS = ["class_weight", "smote"]
 N_FOLDS = 5
 
-TARGETS = {  # 성능 목표
+# 추가: 승인율. 시뮬레이터 add_approval_label(approval_rate=0.7)과 반드시 같은 값으로 맞출 것
+#   -> 모델 승인 결과와 과거 승인 기록을 같은 승인율 조건에서 비교하기 위함
+APPROVAL_RATE = 0.7
+
+TARGETS = {  # 성능 목표 (비교 방향, 목표값)
     "test_auc": (">=", 0.78),
     "test_ks": (">=", 0.28),
     "thin_filer_auc_uplift": (">=", 0.03),
     "psi": ("<", 0.10),
 }
 
-MLFLOW_EXPERIMENT = "credit-scoring"
-REGISTERED_MODEL_NAME = "credit_scoring_model"
+MLFLOW_EXPERIMENT = "credit-scoring"           # MLflow UI에 보일 실험 이름
+REGISTERED_MODEL_NAME = "credit_scoring_model" # Model Registry 등록 이름
 DEFAULT_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
 
 
@@ -118,7 +130,7 @@ def build_model(algo: str, imbalance: str, y_train: pd.Series):
     """
     p = base_params(algo)
     balanced = imbalance == "class_weight"
-    pos_weight = float((y_train == 0).sum() / (y_train == 1).sum())
+    pos_weight = float((y_train == 0).sum() / (y_train == 1).sum())  # 정상 수 / 부도 수
 
     if algo == "logistic_regression":
         clf = LogisticRegression(**p, class_weight="balanced" if balanced else None,
@@ -160,13 +172,30 @@ def psi(expected, actual, bins: int = 10) -> float:
 
 
 def best_f1_threshold(y_true, y_score) -> float:
-    """Validation에서 F1이 최대가 되는 분류 임계값 (Test에는 이 값을 그대로 적용)"""
+    """
+    Validation에서 F1이 최대가 되는 분류 임계값 (Test에는 이 값을 그대로 적용)
+    ※ F1 평가용 기준. 실제 승인 판정은 아래 approval_cutoff_from()의 70% 기준을 사용한다.
+    """
     prec, rec, thr = precision_recall_curve(y_true, y_score)
     f1 = 2 * prec * rec / np.clip(prec + rec, 1e-12, None)
     return float(thr[np.argmax(f1[:-1])])
 
 
+def approval_cutoff_from(y_score, approval_rate: float = APPROVAL_RATE) -> float:
+    """
+    추가: 승인 기준값 계산
+    부도확률을 낮은 순으로 줄 세웠을 때 하위 approval_rate(70%) 지점의 값.
+    이 값 '이하'인 사람을 승인하면 전체 승인율이 약 70%가 된다.
+
+    - 반드시 Validation 예측값으로 계산 (Test로 정하면 Test 결과가 기준 결정에 새어 들어감)
+    - 한 번 정해 저장해 두면, 신청자가 1명씩 들어오는 /predict에서도 비교만 하면 됨
+      (1명만으로는 '상위 몇 %'를 계산할 수 없으므로 미리 고정값이 필요)
+    """
+    return float(np.quantile(np.asarray(y_score), approval_rate))
+
+
 def evaluate(y_true, y_score, threshold: float, prefix: str) -> dict:
+    """AUC, KS, F1을 한 번에 계산. F1은 '부도확률 >= threshold 이면 부도' 판정으로 계산"""
     return {
         f"{prefix}_auc": float(roc_auc_score(y_true, y_score)),
         f"{prefix}_ks": ks_statistic(y_true, y_score),
@@ -175,6 +204,7 @@ def evaluate(y_true, y_score, threshold: float, prefix: str) -> dict:
 
 
 def subgroup_auc(y_true: pd.Series, y_score, mask) -> float:
+    """특정 집단(예: 씬파일러)만 골라서 AUC 계산. 한쪽 클래스만 있으면 NaN"""
     mask = np.asarray(mask, dtype=bool)
     if mask.sum() == 0 or y_true[mask].nunique() < 2:
         return float("nan")
@@ -182,6 +212,7 @@ def subgroup_auc(y_true: pd.Series, y_score, mask) -> float:
 
 
 def thin_filer_mask(X: pd.DataFrame) -> np.ndarray:
+    """씬파일러인 행만 True"""
     if THIN_FILER_COL not in X.columns:
         raise KeyError(f"씬파일러 컬럼 '{THIN_FILER_COL}'이 없습니다. "
                        "preprocessor.py의 CATEGORICAL_COLS 이름을 확인하세요.")
@@ -199,13 +230,13 @@ def run_experiment(algo: str, imbalance: str, data: SplitData) -> dict:
     cv_auc = cross_val_score(clone(model), data.X_train, data.y_train,
                              cv=cv, scoring="roc_auc", n_jobs=1)
 
-    # (2) Train 전체로 학습
+    # (2) Train 전체로 학습 후 세 세트의 부도확률 예측
     model.fit(data.X_train, data.y_train)
     p_train = model.predict_proba(data.X_train)[:, 1]
     p_val = model.predict_proba(data.X_val)[:, 1]
     p_test = model.predict_proba(data.X_test)[:, 1]
 
-    # (3) 임계값은 Validation으로 결정 -> Test에 그대로 적용
+    # (3) F1 임계값은 Validation으로 결정 -> Test에 그대로 적용
     threshold = best_f1_threshold(data.y_val, p_val)
 
     metrics = {"cv_auc_mean": float(cv_auc.mean()), "cv_auc_std": float(cv_auc.std()),
@@ -263,6 +294,7 @@ def setup_mlflow(uri: str) -> str:
 
 
 def log_run(result: dict, model_path: Path | None, preprocessor_path: Path) -> str:
+    """실험 1개를 MLflow run 1개로 기록 (params / metrics / artifacts)"""
     name = f"{result['algo']}_{result['imbalance']}"
     with mlflow.start_run(run_name=name) as run:
         mlflow.log_params({"algorithm": result["algo"], "imbalance": result["imbalance"],
@@ -270,10 +302,10 @@ def log_run(result: dict, model_path: Path | None, preprocessor_path: Path) -> s
                            **result["params"]})
         mlflow.log_metrics({k: v for k, v in result["metrics"].items() if np.isfinite(v)})
         mlflow.sklearn.log_model(
-    result["model"],
-    "model",
-    serialization_format="pickle",   # skops 대신 pickle로 저장
-)          # Registry 등록용
+            result["model"],
+            "model",
+            serialization_format="pickle",   # skops 대신 pickle로 저장 (Registry 등록용)
+        )
         if model_path is not None:
             mlflow.log_artifact(str(model_path), artifact_path="model_file")  # .pkl 원본
         mlflow.log_artifact(str(preprocessor_path), artifact_path="preprocessor")
@@ -281,6 +313,7 @@ def log_run(result: dict, model_path: Path | None, preprocessor_path: Path) -> s
 
 
 def register_best(run_id: str, extra_metrics: dict) -> None:
+    """최종 모델 run에 추가 지표를 기록하고 Model Registry에 등록"""
     with mlflow.start_run(run_id=run_id):
         mlflow.log_metrics({k: v for k, v in extra_metrics.items() if np.isfinite(v)})
         mlflow.set_tag("final_model", "true")
@@ -303,6 +336,7 @@ def register_best(run_id: str, extra_metrics: dict) -> None:
 # 6. 결과 정리
 # ----------------------------------------------------------------------
 def check_targets(m: dict) -> dict:
+    """성능 목표 4개를 PASS/FAIL 판정"""
     out = {}
     for key, (op, goal) in TARGETS.items():
         v = m.get(key, float("nan"))
@@ -327,7 +361,7 @@ def main() -> None:
     if not Path(args.csv).exists():
         raise SystemExit(f"[model] 입력 파일을 찾을 수 없습니다: {Path(args.csv).resolve()}")
 
-    # 1) 전처리 (대안데이터 포함)
+    # 1) 전처리 (대안데이터 포함) + 전처리기 저장 (API에서 같은 변환을 쓰기 위해)
     df = pd.read_csv(args.csv)
     pre = CreditPreprocessor()
     data = pre.process(df)
@@ -353,6 +387,15 @@ def main() -> None:
     print(f"\n[model] 최종 모델: {best['algo']} + {best['imbalance']} "
           f"(Val AUC {best['metrics']['val_auc']:.4f})")
 
+    # 4-1) 승인 기준값 (승인율 70%)
+    #   Validation 부도확률로 기준값을 정하고, Test에 적용해 실제 승인율이 70% 근처인지 확인
+    p_val_best = best["model"].predict_proba(data.X_val)[:, 1]     # Validation 부도확률
+    approval_cutoff = approval_cutoff_from(p_val_best)             # 하위 70% 지점
+    p_test_best = best["model"].predict_proba(data.X_test)[:, 1]   # Test 부도확률 (확인용)
+    test_approval_rate = float((p_test_best <= approval_cutoff).mean())  # Test 실제 승인율
+    print(f"[model] 승인 기준값(approval_cutoff) {approval_cutoff:.4f}  "
+          f"목표 승인율 {APPROVAL_RATE:.0%} / Test 실제 승인율 {test_approval_rate:.2%}")
+
     # 5) 씬파일러 AUC 향상
     uplift = thin_filer_uplift(best["algo"], best["imbalance"], df,
                                best["metrics"]["test_auc_thin_filer"])
@@ -365,9 +408,18 @@ def main() -> None:
     meta = {
         "model_version": MODEL_VERSION,
         "trained_at": datetime.now().isoformat(timespec="seconds"),
-        "best_model": {"algorithm": best["algo"], "imbalance": best["imbalance"],
-                       "file": saved[id(best)].name, "threshold": best["metrics"]["threshold"]},
-        "feature_names": pre.feature_names,
+        "best_model": {
+            "algorithm": best["algo"],
+            "imbalance": best["imbalance"],
+            "file": saved[id(best)].name,
+            "threshold": best["metrics"]["threshold"],   # F1 최대 임계값 (평가용)
+            # 추가: 승인 판정용 값. /predict, /fairness 에서는 이 값을 사용
+            #   승인 규칙: 부도확률 <= approval_cutoff  ->  승인
+            "approval_rate": APPROVAL_RATE,
+            "approval_cutoff": approval_cutoff,
+            "test_approval_rate": test_approval_rate,
+        },
+        "feature_names": pre.feature_names,   # 전처리 후 피처 이름 (SHAP용)
         "final_metrics": final_metrics,
         "targets": checks,
         "experiments": [{"algorithm": r["algo"], "imbalance": r["imbalance"], **r["metrics"]}
@@ -377,10 +429,15 @@ def main() -> None:
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n[model] 저장: {', '.join(p.name for p in saved.values())}, {meta_path.name} -> {MODEL_DIR}")
 
-    # 7) MLflow 기록 + Registry 등록
+    # 7) MLflow 기록 + Registry 등록 (승인 기준값도 최종 모델 run에 함께 기록)
     uri = setup_mlflow(args.tracking_uri)
     run_ids = {id(r): log_run(r, saved.get(id(r)), DEFAULT_SAVE) for r in results}
-    register_best(run_ids[id(best)], {**uplift, "all_targets_passed": final_metrics["all_targets_passed"]})
+    register_best(run_ids[id(best)], {
+        **uplift,
+        "all_targets_passed": final_metrics["all_targets_passed"],
+        "approval_cutoff": approval_cutoff,          # 추가
+        "test_approval_rate": test_approval_rate,    # 추가
+    })
     print(f"[model] MLflow 기록 완료 ({uri}, 실험명 '{MLFLOW_EXPERIMENT}')")
 
 
