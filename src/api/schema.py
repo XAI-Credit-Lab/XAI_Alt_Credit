@@ -42,7 +42,10 @@ class predict_response(BaseModel):
 
 
 # 4. (GET) 공정성 검증(non-mitigation) -> DI ratio, tpr, fpr
-# mitigation적용 안 한 함수이름-non_miti라 가정
+# 모델(model.py)에 fairness.py호출하는 함수(fairness()) 있는 것으로 가정
+# fairness.py: mitigation한 함수(miti()), 안 한 함수(non_miti())있다고 가정
+# 모델(model.py)의 fairness()에서 fairness.py의 miti()호출에서 miti 변수에 할당,
+# non_miti()호출에서 non_miti 변수에 할당하고, return miti, non_miti로 결과 반환한다고 가정
 class fairness_request(BaseModel):
     pass
 class fairness_response(BaseModel):
@@ -52,7 +55,6 @@ class fairness_response(BaseModel):
 
 
 # 5. (GET) 4모델 상속(?), 적용 전 DI ratio, tpr, fpr/ 적용 후 DI ratio, tpr, fpr
-# mitigation적용 한 함수이름-miti라 가정
 class fairness_mitigation_request(BaseModel):
     pass
 class fairness_mitigation_response(BaseModel):

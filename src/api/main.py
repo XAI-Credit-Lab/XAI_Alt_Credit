@@ -51,37 +51,37 @@ def predict(data : schema.predict_request):
 #     return
 
 # 4. (GET) 공정성 검증(non-mitigation) -> DI ratio, tpr, fpr
-# mitigation적용 안 한 함수이름-non_miti라 가정, 매개 변수 없다고 가정
-# fair
+# 모델(model.py)에 fairness.py호출하는 함수(fairness()) 있는 것으로 가정
+# fairness.py: mitigation한 함수(miti()), 안 한 함수(non_miti())있다고 가정
+# 모델(model.py)의 fairness()에서 fairness.py의 miti()호출에서 miti 변수에 할당,
+# non_miti()호출에서 non_miti 변수에 할당하고, return miti, non_miti로 결과 반환한다고 가정
 @router.get("/fairness", response_model = schema.fairness_response)
 def fairness():
     sys.path.insert(0, str(ROOT_DIR)) 
-    from src.fairness import fairness as f_calc # fairness.py 호출, 폴더 이름-파일 이름 겹쳐 f_calc라 정의
-    result = f_calc.non_miti()
+    from src.data import model
+    non_miti, miti = model.fairness()
     return{
-        "di_ratio": result["di_ratio"],
-        "equalized_odds_tpr_diff" : result["equalized_odds_tpr_diff"],
-        "equalized_odds_fpr_diff" : result["equalized_odds_fpr_diff"]
+        "di_ratio": non_miti["di_ratio"],
+        "equalized_odds_tpr_diff" : non_miti["equalized_odds_tpr_diff"],
+        "equalized_odds_fpr_diff" : non_miti["equalized_odds_fpr_diff"]
     }
 
 # 5. (GET) 4모델 상속(?) 적용 전 DI ratio, tpr, fpr/ 적용 후 DI ratio, tpr, fpr
-# mitigation적용 한 함수이름-miti라 가정
 @router.get("/fairness/mitigation", response_model = schema.fairness_mitigation_response)
 def fairness_mitigation():
     sys.path.insert(0, str(ROOT_DIR)) 
-    from src.fairness import fairness as f_calc # fairness.py 호출
-    non_mitigation = f_calc.non_miti() 
-    mitigation = f_calc.miti()
+    from src.data import model
+    non_miti, miti = model.fairness()
     return{
         "before": { # mitigation 적용 전
-            "di_ratio": non_mitigation["di_ratio"],
-            "equalized_odds_tpr_diff" : non_mitigation["equalized_odds_tpr_diff"],
-            "equalized_odds_fpr_diff" : non_mitigation["equalized_odds_fpr_diff"]
+            "di_ratio": non_miti["di_ratio"],
+            "equalized_odds_tpr_diff" : non_miti["equalized_odds_tpr_diff"],
+            "equalized_odds_fpr_diff" : non_miti["equalized_odds_fpr_diff"]
         },
         "after": { # mitigation 적용 후
-            "di_ratio": mitigation["di_ratio"],
-            "equalized_odds_tpr_diff" : mitigation["equalized_odds_tpr_diff"],
-            "equalized_odds_fpr_diff" : mitigation["equalized_odds_fpr_diff"]
+            "di_ratio": miti["di_ratio"],
+            "equalized_odds_tpr_diff" : miti["equalized_odds_tpr_diff"],
+            "equalized_odds_fpr_diff" : miti["equalized_odds_fpr_diff"]
         }
     }
 
