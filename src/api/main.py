@@ -42,13 +42,16 @@ def predict(data : schema.predict_request):
         "risk_grade": result["risk_grade"]
     }
     
-
-# @router.post("/explain", response_model = schema.explain_response)
-# def explain(data : model.explain_request):
-#     # sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))) #상위 폴더 접근
-#     # from explainer import func
-#     # 추가 예정
-#     return
+# 3. (POST) XAI, 호출 시 거절 사유 top 5가 json 형식으로 반환
+# 모델(model.py)에 /explain 폴더의 XAI.py 호출하는 함수(explain()) 있는 것으로 가정
+@router.post("/explain", response_model = schema.explain_response)
+def explain(data : schema.explain_request):
+    sys.path.insert(0, str(ROOT_DIR)) 
+    from src.data import model
+    result = model.explain()
+    return{
+        
+    }
 
 # 4. (GET) 공정성 검증(non-mitigation) -> DI ratio, tpr, fpr
 # 모델(model.py)에 fairness.py호출하는 함수(fairness()) 있는 것으로 가정
