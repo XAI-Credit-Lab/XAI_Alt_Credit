@@ -60,6 +60,7 @@ from unittest import result
 import numpy as np          # 난수 생성, 수치 계산
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split         # CSV/데이터프레임 처리
 
 # 연령 구간 정의와 DI 계산 함수는 공정성 모듈에서 가져옴
@@ -97,6 +98,8 @@ TRAD_INFO_COLS = DELINQ_COLS + [
     "NumberOfOpenCreditLinesAndLoans",
     "NumberRealEstateLoansOrLines",
 ]
+
+# TAIL_PI, TAIL_SHARE, TAIL_CLEAN_RATIO 추가
 THIN_INFO_LOSS = 0.5   # 씬파일러의 기존 변수 값 중 50%를 정보 없는 값으로 교체 (가정값)
 
 # 모델 피처가 아닌 컬럼 (라벨·보호 속성·대리변수) - 전처리 단계에서 제외할 때 참고
@@ -120,30 +123,26 @@ BIAS_PENALTY = {"female": 1.0, "~34": 0.7, "55+": 0.8}
 # 부도와 무관하게 그룹만 보고 낮춤 → 모델이 부도 라벨로 학습해도 이 편향을 배우게 됨
 # female 편향은 5개 변수 모두에 같은 방향(불리한 쪽)으로 넣음
 # → 일부 변수에만 넣으면 모델이 "이 변수들만 낮은 패턴"으로 성별을 알아채 편향을 보정해 버림
-'''
-FEATURE_BIAS = {
-    "telecom_payment_rate":  {"female": 0.5, "55+": 0.5},               # 통신비가 배우자·자녀 명의라 기록 불리
-    "utility_payment_rate":  {"female": 0.5, "~34": 1.0},               # 공과금이 본인 명의 아님(주부·부모와 동거)
-    "spending_consistency":  {"female": 0.5, "~34": 0.8, "55+": 0.7},   # 경력단절·사회초년생·은퇴로 소비 변동
-    "regular_payment_count": {"female": -0.5, "~34": -0.6},             # 부도와 +상관이라 불리하게 = 늘림 (가계 고정지출을 본인 명의로 결제)
-    "app_login_frequency":   {"female": 0.5, "55+": 0.6},               # 가계 금융을 배우자 명의 앱으로 관리 / 고령층 디지털 격차
-}
-'''
 
 # FEATURE_BIAS: female 값만 3배 (0.5 → 1.5, 정기결제는 -0.5 → -1.5), 나머지는 그대로
 FEATURE_BIAS = {
-    "telecom_payment_rate":  {"female": 1.5, "55+": 0.5},
-    "utility_payment_rate":  {"female": 1.5, "~34": 1.0},
-    "spending_consistency":  {"female": 1.5, "~34": 0.8, "55+": 0.7},
-    "regular_payment_count": {"female": -1.5, "~34": -0.6},
-    "app_login_frequency":   {"female": 1.5, "55+": 0.6},
+    "telecom_payment_rate":  {"female": 1.5, "55+": 0.5},               # 통신비가 배우자·자녀 명의라 기록 불리
+    "utility_payment_rate":  {"female": 1.5, "~34": 1.0},               # 공과금이 본인 명의 아님(주부·부모와 동거)
+    "spending_consistency":  {"female": 1.5, "~34": 0.8, "55+": 0.7},   # 경력단절·사회초년생·은퇴로 소비 변동
+    "regular_payment_count": {"female": -1.5, "~34": -0.6},             # 부도와 +상관이라 불리하게 = 늘림 (가계 고정지출을 본인 명의로 결제)
+    "app_login_frequency":   {"female": 1.5, "55+": 0.6},               # 가계 금융을 배우자 명의 앱으로 관리 / 고령층 디지털 격차
 }
 
 LAM = 0.8          # 공통 요인 비중 (0.3 → 0.8): 대안변수끼리 정보가 겹쳐, 합쳤을 때 AUC가 덜 오름
-TAIL_PI = 0.3      # 부도자 중 '꼬리'(값이 크게 나쁜 집단)에 들어가는 비율 (가정값)
+#TAIL_PI = 0.3      # 부도자 중 '꼬리'(값이 크게 나쁜 집단)에 들어가는 비율 (가정값)
+TAIL_SHARE = 0.85        # 기존 그대로
 TAIL_SHARE = 0.85  # 변수끼리 같은 부도자가 꼬리에 들어갈 확률 → 높을수록 합친 AUC가 덜 오름
+# 꼬리 확률 (가정값): 부도 여부가 아니라 기존 연체 기록을 기준으로 정함
+# → 꼬리 = "납부에 어려움을 겪는 사람". 정상 고객도 들어갈 수 있어 정답 표시가 되지 않음
+TAIL_P_DELINQ = 0.5        # 연체 기록 있는 사람이 꼬리에 들어갈 확률 (부도 여부 무관)
+TAIL_P_CLEAN = 0.02        # 연체 기록 없는 사람
+TAIL_DEFAULT_BOOST = 1.5   # 부도자는 확률을 이만큼 곱함 → 타깃 상관을 조절하는 손잡이
 
-'''
 # 몸통 상관: 약하게 유지 (편향이 모델에 전달되는 통로). 부호 = 부도와의 상관 방향
 RHO_BODY = {
     "telecom_payment_rate":  -0.15,
@@ -161,7 +160,7 @@ RHO_BODY = {
     "regular_payment_count":  0.25,
     "app_login_frequency":   -0.25,
 }
-
+'''
 # 꼬리 이동 폭(표준편차 단위): |r| 0.3~0.5를 맞추는 손잡이. calibrate_tail_delta()로 재보정
 TAIL_DELTA = {c: 4.5 for c in ALT_COLS}
 TAIL_DELTA["app_login_frequency"] = 20.0
@@ -188,6 +187,8 @@ def _corr_latent(t, rho, f, rng, lam=0.3):
     e = np.sqrt(lam) * -np.sign(rho) * f + np.sqrt(1 - lam) * rng.standard_normal(len(t))  # f를 위험 방향에 맞춰 넣음 (rho가 +인 변수는 -f)
     return rho * s + np.sqrt(1 - rho**2) * e                               # 타깃과의 상관 ≈ rho
 
+'''
+수정 전
 def _tail_flag_maker(t, rng, pi=TAIL_PI, share=TAIL_SHARE):
     """변수마다 '꼬리' 대상자를 뽑는 함수를 반환. share 확률로 공통 대상자를 공유"""
     n = len(t)
@@ -196,7 +197,20 @@ def _tail_flag_maker(t, rng, pi=TAIL_PI, share=TAIL_SHARE):
         own = (t == 1) & (rng.random(n) < pi)                 # 이 변수에서만 나쁜 부도자
         return np.where(rng.random(n) < share, base, own)
     return next_flag
-
+'''
+def _tail_flag_maker(t, has_delinq, rng, share=TAIL_SHARE):
+    """변수마다 '꼬리' 대상자를 뽑는 함수를 반환. share 확률로 공통 대상자를 공유
+    꼬리 확률은 기존 연체 기록으로 정하고 부도자만 조금 높임 (정상 고객도 꼬리에 들어감)
+    → 비씬파일러: 대안변수가 전통 연체 정보를 비추는 거울이라 정보가 겹침
+    → 씬파일러: 전통 연체 정보가 지워지므로 대안변수가 이를 되살림 (uplift의 원천)"""
+    n = len(t)
+    p = np.where(has_delinq, TAIL_P_DELINQ, TAIL_P_CLEAN) * np.where(t == 1, TAIL_DEFAULT_BOOST, 1.0)
+    p = np.clip(p, 0, 1)
+    base = rng.random(n) < p                           # 여러 변수에서 공통으로 나쁜 사람
+    def next_flag():
+        own = rng.random(n) < p                        # 이 변수에서만 나쁜 사람
+        return np.where(rng.random(n) < share, base, own)
+    return next_flag
 
 def _alt_latent(t, rho_body, delta, flag, f, rng, lam=LAM):
     """몸통(약한 상관) + 꼬리(일부 부도자만 크게 이동) 잠재값"""
@@ -334,7 +348,9 @@ def add_alt_features(df, seed=42, thin_filer_ratio=0.2, bias_ratio=0.0, approval
     df = add_age_group(df)                            # 연령대 (편향 주입·리포트 공통 구간)
     df = add_persona(df)                              # 페르소나 라벨 (성별이 먼저 있어야 함)
 
-    next_flag = _tail_flag_maker(t, rng)
+    # 꼬리 대상 선택용 연체 기록 여부: 씬파일러 주입(inject_thin_filers) 전 원본 기준
+    has_delinq = (df[DELINQ_COLS].fillna(0).sum(axis=1) > 0).to_numpy()
+    next_flag = _tail_flag_maker(t, has_delinq, rng)
 
     def z(feature):   # 몸통+꼬리 잠재값 - 그룹 편향(bias_ratio × FEATURE_BIAS)
         return (_alt_latent(t, RHO_BODY[feature], TAIL_DELTA[feature], next_flag(), f, rng)
@@ -411,6 +427,25 @@ def model_di_report(df, target="SeriousDlqin2yrs", approval_rate=0.7, seed=42, v
         print(f"  [모델 기준] 성별 DI(여/남): {g:.3f}" + ("  ← 0.8 미만" if g < 0.8 else ""))
         print(f"  [모델 기준] 연령대 DI: {fmt_age_di(a)}")
     return g, a
+
+def feature_group_auc_report(df, target="SeriousDlqin2yrs", seed=42):
+    """전통/대안/통합 피처 AUC를 전체·씬파일러·비씬별로 비교 (모델 단계 전 빠른 점검)"""
+    drop = set(NON_FEATURE_COLS) | {target, "is_thin_filer", "Unnamed: 0"}
+    all_feats = [c for c in df.columns if c not in drop]
+    groups = {"전통": [c for c in all_feats if c not in ALT_COLS], "대안": ALT_COLS, "통합": all_feats}
+    tr, te = train_test_split(df.index, test_size=TEST_SIZE, stratify=df[target], random_state=seed)
+    y = df.loc[te, target].to_numpy()
+    thin = df.loc[te, "is_thin_filer"].to_numpy() == 1
+    rows = {}
+    for name, feats in groups.items():
+        p = HistGradientBoostingClassifier(random_state=seed).fit(
+            df.loc[tr, feats], df.loc[tr, target]).predict_proba(df.loc[te, feats])[:, 1]
+        rows[name] = {"전체": roc_auc_score(y, p), "씬": roc_auc_score(y[thin], p[thin]),
+                      "비씬": roc_auc_score(y[~thin], p[~thin])}
+    table = pd.DataFrame(rows).T
+    print(table.round(3).to_string())
+    print(f"  씬파일러 uplift(통합-전통): {table.loc['통합', '씬'] - table.loc['전통', '씬']:+.3f}")
+    return table
 
 def alt_feature_report(df):
     """성별·연령대별 대안변수 평균 출력 (편향이 의도한 방향으로 들어갔는지 확인)"""
@@ -631,6 +666,7 @@ def main(thin_filer_ratio=0.2, tune=False):
         approval_report(result)      # 라벨 기준 DI (BIAS_PENALTY 영향)
         feature_di_report(result)    # 대안변수 기준 DI (FEATURE_BIAS 영향)
         model_di_report(result)      # 모델 기준 DI (최종 판단 기준)  ← 추가
+        feature_group_auc_report(result)  # 전통/대안/통합 AUC, 씬파일러 uplift
         alt_feature_report(result)   # 그룹별 대안변수 평균
 
         output_path = out_dir / f"결과_{name}.csv"

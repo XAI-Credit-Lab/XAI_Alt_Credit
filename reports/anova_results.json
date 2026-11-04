@@ -1,0 +1,224 @@
+{
+  "test_1_feature_group": {
+    "test_name": "피처 그룹별 AUC 비교 (One-way ANOVA)",
+    "groups": [
+      "전통모델",
+      "대안모델",
+      "통합모델"
+    ],
+    "group_means": {
+      "전통모델": 0.8545,
+      "대안모델": 0.9724,
+      "통합모델": 0.9851
+    },
+    "group_stds": {
+      "전통모델": 0.0045,
+      "대안모델": 0.0018,
+      "통합모델": 0.0011
+    },
+    "n_per_group": {
+      "전통모델": 15,
+      "대안모델": 15,
+      "통합모델": 15
+    },
+    "f_statistic": 9462.164,
+    "p_value": 0.0,
+    "effect_size_eta_squared": 0.9978,
+    "effect_size_interpretation": "Large",
+    "alpha": 0.05,
+    "is_significant": true,
+    "post_hoc_tukey": [
+      {
+        "comparison": "전통모델 vs 대안모델",
+        "mean_diff": -0.1179,
+        "p_adj": 0.0,
+        "ci_lower": -0.1205,
+        "ci_upper": -0.1154,
+        "significant": true
+      },
+      {
+        "comparison": "전통모델 vs 통합모델",
+        "mean_diff": -0.1306,
+        "p_adj": 0.0,
+        "ci_lower": -0.1332,
+        "ci_upper": -0.1281,
+        "significant": true
+      },
+      {
+        "comparison": "대안모델 vs 통합모델",
+        "mean_diff": -0.0127,
+        "p_adj": 0.0,
+        "ci_lower": -0.0152,
+        "ci_upper": -0.0101,
+        "significant": true
+      }
+    ],
+    "assumptions": {
+      "shapiro_p_values": {
+        "전통모델": 0.199129,
+        "대안모델": 0.94733,
+        "통합모델": 0.091469
+      },
+      "levene_p_value": 0.002128,
+      "note": "p >= 0.05 이면 정규성/등분산성 가정을 기각하지 않음"
+    },
+    "interpretation": "그룹 간 평균 차이가 통계적으로 유의합니다 (F=9462.164, p=0.0). η²=0.9978로 효과 크기는 Large이며, 평균이 가장 높은 그룹은 통합모델(0.9851)입니다. Tukey HSD 결과 유의한 차이: 전통모델 vs 대안모델, 전통모델 vs 통합모델, 대안모델 vs 통합모델.",
+    "fold_scores": {
+      "전통모델": [
+        0.8524,
+        0.8586,
+        0.8614,
+        0.8504,
+        0.8517,
+        0.8525,
+        0.8596,
+        0.8582,
+        0.8481,
+        0.8544,
+        0.8535,
+        0.8526,
+        0.8626,
+        0.8494,
+        0.8516
+      ],
+      "대안모델": [
+        0.9733,
+        0.9719,
+        0.9716,
+        0.9695,
+        0.9749,
+        0.9711,
+        0.973,
+        0.976,
+        0.9723,
+        0.9696,
+        0.9728,
+        0.9735,
+        0.9714,
+        0.9711,
+        0.9743
+      ],
+      "통합모델": [
+        0.9855,
+        0.986,
+        0.9849,
+        0.9837,
+        0.9854,
+        0.9842,
+        0.9854,
+        0.988,
+        0.9836,
+        0.9843,
+        0.9849,
+        0.9856,
+        0.9856,
+        0.9848,
+        0.9847
+      ]
+    }
+  },
+  "test_2_algorithm": {
+    "test_name": "알고리즘별 AUC 비교 (One-way ANOVA)",
+    "groups": [
+      "LogisticRegression",
+      "XGBoost",
+      "LightGBM"
+    ],
+    "group_means": {
+      "LogisticRegression": 0.986,
+      "XGBoost": 0.9851,
+      "LightGBM": 0.9852
+    },
+    "group_stds": {
+      "LogisticRegression": 0.001,
+      "XGBoost": 0.0011,
+      "LightGBM": 0.0012
+    },
+    "n_per_group": {
+      "LogisticRegression": 15,
+      "XGBoost": 15,
+      "LightGBM": 15
+    },
+    "f_statistic": 3.0632,
+    "p_value": 0.057304,
+    "effect_size_eta_squared": 0.1273,
+    "effect_size_interpretation": "Medium",
+    "alpha": 0.05,
+    "is_significant": false,
+    "post_hoc_tukey": null,
+    "assumptions": {
+      "shapiro_p_values": {
+        "LogisticRegression": 0.748371,
+        "XGBoost": 0.091469,
+        "LightGBM": 0.545899
+      },
+      "levene_p_value": 0.777523,
+      "note": "p >= 0.05 이면 정규성/등분산성 가정을 기각하지 않음"
+    },
+    "interpretation": "그룹 간 평균 차이가 통계적으로 유의하지 않습니다 (F=3.0632, p=0.057304, α=0.05). η²=0.1273 (Medium).",
+    "fold_scores": {
+      "LogisticRegression": [
+        0.9866,
+        0.9867,
+        0.9859,
+        0.9842,
+        0.9865,
+        0.9855,
+        0.9863,
+        0.9884,
+        0.9845,
+        0.9853,
+        0.9861,
+        0.986,
+        0.9869,
+        0.9852,
+        0.9859
+      ],
+      "XGBoost": [
+        0.9855,
+        0.986,
+        0.9849,
+        0.9837,
+        0.9854,
+        0.9842,
+        0.9854,
+        0.988,
+        0.9836,
+        0.9843,
+        0.9849,
+        0.9856,
+        0.9856,
+        0.9848,
+        0.9847
+      ],
+      "LightGBM": [
+        0.9855,
+        0.986,
+        0.9848,
+        0.9836,
+        0.9854,
+        0.9838,
+        0.9857,
+        0.9881,
+        0.9831,
+        0.9843,
+        0.9856,
+        0.986,
+        0.9859,
+        0.9849,
+        0.9847
+      ]
+    }
+  },
+  "meta": {
+    "metric": "ROC-AUC",
+    "cv": "RepeatedStratifiedKFold(n_splits=5, n_repeats=3)",
+    "alpha": 0.05,
+    "n_samples": 104999,
+    "feature_group_model": "XGBoost",
+    "n_traditional_features": 17,
+    "n_alternative_features": 5,
+    "note": "fold 간 학습 데이터가 겹쳐 관측치가 완전히 독립은 아니므로 p-value 해석 시 유의"
+  },
+  "disclaimer": "본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다."
+}
