@@ -48,7 +48,8 @@ import numpy as np
 import pandas as pd
 from sklearn.base import clone
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import f1_score, precision_recall_curve, roc_auc_score, roc_curve
+from sklearn.metrics import (f1_score, precision_recall_curve, precision_score,
+                             recall_score, roc_auc_score, roc_curve)
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 
 from imblearn.over_sampling import SMOTE
@@ -90,6 +91,12 @@ N_FOLDS = 5
 # 추가: 승인율. 시뮬레이터 add_approval_label(approval_rate=0.7)과 반드시 같은 값으로 맞출 것
 #   -> 모델 승인 결과와 과거 승인 기록을 같은 승인율 조건에서 비교하기 위함
 APPROVAL_RATE = 0.7
+# 신용 등급 기준: Validation 부도확률 분포의 분위수로 4개 경계를 정함 (부도확률이 낮을수록 좋은 등급)
+#   하위 0~20% → A, 20~45% → B, 45~70% → C, 70~85% → D, 85~100% → E
+#   0.7 경계 = APPROVAL_RATE 와 같아야 "A~C 승인 / D~E 거절" 이 승인 판정과 일치함
+GRADE_QUANTILES = [0.2, 0.45, 0.7, 0.85]
+GRADE_LABELS = ["A", "B", "C", "D", "E"]
+assert APPROVAL_RATE in GRADE_QUANTILES, "등급 경계에 승인율(0.7)이 포함돼야 승인 판정과 등급이 일치함"
 
 TARGETS = {  # 성능 목표 (비교 방향, 목표값)
     "test_auc": (">=", 0.78),
@@ -193,15 +200,28 @@ def approval_cutoff_from(y_score, approval_rate: float = APPROVAL_RATE) -> float
     """
     return float(np.quantile(np.asarray(y_score), approval_rate))
 
+def grade_cutoffs_from(y_score, quantiles=GRADE_QUANTILES) -> list[float]:
+    """Validation 부도확률의 분위수 → 등급 경계값 4개 (approval_cutoff 와 같은 원리)"""
+    return [float(v) for v in np.quantile(np.asarray(y_score), quantiles)]
+
+
+def assign_grade(y_score, cutoffs, labels=GRADE_LABELS) -> np.ndarray:
+    """부도확률 → 등급. 경계값과 같으면 좋은 쪽 등급 (승인 규칙 '부도확률 <= cutoff' 와 일치)
+    예) cutoffs=[0.08, 0.20, 0.42, 0.61] 일 때 0.05→A, 0.42→C(승인), 0.43→D(거절)"""
+    idx = np.searchsorted(cutoffs, np.asarray(y_score), side="left")
+    return np.asarray(labels)[idx]
 
 def evaluate(y_true, y_score, threshold: float, prefix: str) -> dict:
-    """AUC, KS, F1을 한 번에 계산. F1은 '부도확률 >= threshold 이면 부도' 판정으로 계산"""
+    """AUC, KS, F1, Precision, Recall 계산. '부도확률 >= threshold 이면 부도' 판정 기준"""
+    y_pred = (y_score >= threshold).astype(int)
     return {
         f"{prefix}_auc": float(roc_auc_score(y_true, y_score)),
         f"{prefix}_ks": ks_statistic(y_true, y_score),
-        f"{prefix}_f1": float(f1_score(y_true, (y_score >= threshold).astype(int))),
+        f"{prefix}_f1": float(f1_score(y_true, y_pred)),
+        # zero_division=0: 부도로 예측한 사람이 0명이어도 에러 없이 0으로 처리
+        f"{prefix}_precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        f"{prefix}_recall": float(recall_score(y_true, y_pred, zero_division=0)),
     }
-
 
 def subgroup_auc(y_true: pd.Series, y_score, mask) -> float:
     """특정 집단(예: 씬파일러)만 골라서 AUC 계산. 한쪽 클래스만 있으면 NaN"""
@@ -396,6 +416,16 @@ def main() -> None:
     print(f"[model] 승인 기준값(approval_cutoff) {approval_cutoff:.4f}  "
           f"목표 승인율 {APPROVAL_RATE:.0%} / Test 실제 승인율 {test_approval_rate:.2%}")
 
+    # 4-2) 신용 등급 경계 (승인 기준값과 같은 방식: Validation 으로 정하고 Test 로 확인)
+    grade_cutoffs = grade_cutoffs_from(p_val_best)
+    test_grades = pd.Series(assign_grade(p_test_best, grade_cutoffs), name="grade")
+    grade_check = (pd.DataFrame({"grade": test_grades, "default": data.y_test.to_numpy()})
+                   .groupby("grade")["default"].agg(비율="size", 부도율="mean"))
+    grade_check["비율"] = grade_check["비율"] / len(test_grades)
+    print("[model] 등급 경계값:", [round(c, 4) for c in grade_cutoffs])
+    print("[model] Test 등급 분포 (부도율은 A→E 로 갈수록 높아져야 정상)")
+    print(grade_check.round(4).to_string())
+
     # 5) 씬파일러 AUC 향상
     uplift = thin_filer_uplift(best["algo"], best["imbalance"], df,
                                best["metrics"]["test_auc_thin_filer"])
@@ -418,6 +448,11 @@ def main() -> None:
             "approval_rate": APPROVAL_RATE,
             "approval_cutoff": approval_cutoff,
             "test_approval_rate": test_approval_rate,
+            # 신용 등급 기준 (/predict 의 risk_grade 에서 사용)
+            "grade_quantiles": GRADE_QUANTILES,
+            "grade_labels": GRADE_LABELS,
+            "grade_cutoffs": grade_cutoffs,
+            
         },
         "feature_names": pre.feature_names,   # 전처리 후 피처 이름 (SHAP용)
         "final_metrics": final_metrics,
