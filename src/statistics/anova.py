@@ -29,7 +29,6 @@ p < alpha 인 경우 사후 검정(Tukey HSD) 결과가 포함된다.
   데이터 → 모델별 fold AUC 수집 → ANOVA(F, p, η²) → 유의하면 Tukey HSD
   → JSON 저장 → FastAPI /anova 와 대시보드에서 읽기
 
-본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다.
 """
 # ↑ 파일 맨 위 큰따옴표 세 개는 "모듈 docstring".
 #   실행에는 영향이 없고, 이 파일이 무엇을 하는지 적어둔 문서다. help(anova) 로 볼 수 있다.
@@ -66,14 +65,6 @@ from sklearn.model_selection import RepeatedStratifiedKFold  # 클래스 비율�
 # 이 파일 전용 로거. __name__ 은 "src.statistics.anova" 가 되어
 # 로그에 어느 모듈에서 찍힌 것인지 표시된다.
 logger = logging.getLogger(__name__)
-
-
-# =========================================================================== #
-# 상수
-# =========================================================================== #
-
-# 노션 제약사항의 면책 조항. 결과 JSON 에 포함된다.
-DISCLAIMER = "본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다."
 
 # __file__ = 현재 파일 경로(.../src/statistics/anova.py)
 # .resolve() 로 절대 경로로 바꾸고,
@@ -143,6 +134,23 @@ class AnovaConfig:
 # =========================================================================== #
 # 유틸 함수
 # =========================================================================== #
+def _to_float(value: Any, ndigits: Optional[int] = 6) -> Optional[float]:
+    """numpy 값을 JSON 직렬화 가능한 float 로 변환 (NaN/inf → None).
+    ndigits=None 이면 반올림하지 않는다."""
+    if value is None:
+        return None
+    value = float(value)
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return value if ndigits is None else round(value, ndigits)
+
+
+def _to_pvalue(value: Any) -> Optional[float]:
+    """p값은 소수 자릿수 반올림 대신 유효숫자 4자리로 유지.
+    예) 0.000000000032144 → 3.214e-11  (round(…, 6) 이면 0.0 이 돼버림)"""
+    v = _to_float(value, ndigits=None)
+    return None if v is None else float(f"{v:.4g}")
+'''
 def _to_float(value: Any, ndigits: int = 6) -> Optional[float]:
     """numpy 값을 JSON 직렬화 가능한 float 로 변환 (NaN/inf → None)."""
     if value is None:          # None 이면 그대로 None
@@ -153,7 +161,7 @@ def _to_float(value: Any, ndigits: int = 6) -> Optional[float]:
     if math.isnan(value) or math.isinf(value):
         return None
     return round(value, ndigits)  # 소수점 자리 정리
-
+'''
 
 def interpret_eta_squared(eta_squared: Optional[float]) -> str:
     """노션 가이드의 η² 해석 기준."""
@@ -254,7 +262,7 @@ def one_way_anova(
         f_stat, p_value = stats.f_oneway(*samples)
 
     eta2 = eta_squared(samples)       # 효과 크기
-    p_clean = _to_float(p_value)      # NaN 이면 None
+    p_clean = _to_pvalue(p_value)
     is_significant = p_clean is not None and p_clean < alpha   # p < 0.05 이면 유의
 
     # 노션 예시의 /anova 응답 형식에 맞춘 딕셔너리
@@ -314,7 +322,7 @@ def tukey_hsd(
     for i in range(len(names)):
         # i < j 인 쌍만 → (0,1), (0,2), (1,2) 3쌍. 중복·자기 자신 비교 제외
         for j in range(i + 1, len(names)):
-            p_adj = _to_float(res.pvalue[i, j])   # 보정된 p값 (행렬의 i행 j열)
+            p_adj = _to_pvalue(res.pvalue[i, j])
             comparisons.append({
                 "comparison": f"{names[i]} vs {names[j]}",   # 예: "전통모델 vs 통합모델"
                 # 평균(i) − 평균(j). 음수면 j 가 더 높음
@@ -579,7 +587,6 @@ def run_all_anova(
             # 통계적 한계 명시: fold 끼리 학습 데이터가 겹쳐 p값이 다소 낙관적일 수 있음
             "note": "fold 간 학습 데이터가 겹쳐 관측치가 완전히 독립은 아니므로 p-value 해석 시 유의",
         },
-        "disclaimer": DISCLAIMER,
     }
 
     if save:
@@ -662,7 +669,6 @@ def main() -> None:
 
     for key in ("test_1_feature_group", "test_2_algorithm"):
         print(f"\n[{key}] {results[key]['interpretation']}")   # 터미널에 해석 문장 출력
-    print(f"\n{DISCLAIMER}")
 
 
 # python -m src.statistics.anova 로 "직접 실행했을 때만" main() 을 호출한다.

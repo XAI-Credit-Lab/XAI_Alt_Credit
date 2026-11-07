@@ -23,12 +23,21 @@ XAI 기반 대안신용평가 시스템 - 대안 데이터 시뮬레이터
                             (씬파일러 AUC uplift 평가는 모델 단계에서 수행)
 
 구현 방법
-  - 상관 생성: _corr_latent()
-      * 표준화한 타깃과 독립 난수를 선형결합해 타깃과의 상관을 rho로 맞춤
+  - 상관 생성: _alt_latent() = 몸통 + 꼬리
+      * 몸통: 표준화한 타깃과 독립 난수를 선형결합해 약한 상관(RHO_BODY ±0.22)을 줌
         (2변수 Cholesky 분해와 같은 형태, 힌트의 방법 2에 해당)
-      * 모든 대안 변수가 공통 요인 f('금융 성실도')를 공유해 대안 변수끼리도 상관을 갖게 함
+      * 꼬리: _tail_flag_maker()가 '납부에 어려움을 겪는 사람'을 뽑아 위험 방향으로 TAIL_DELTA만큼 이동
+          - 꼬리 확률은 기존 연체 기록 기준(TAIL_P_DELINQ / TAIL_P_CLEAN), 부도자만 TAIL_DEFAULT_BOOST배
+          - 정상 고객도 꼬리에 들어가므로 부도 정답 표시가 되지 않음
+          - 씬파일러는 전통 연체 정보가 지워지므로 대안변수가 이를 되살림 (씬파일러 uplift의 원천)
+      * 타깃 상관(|r| 0.3~0.5)은 TAIL_DEFAULT_BOOST와 RHO_BODY로 조절
+        (TAIL_DELTA는 키워도 |r|이 corr(꼬리, 부도) 근처에서 멈추므로 고정값으로 둠)
+      * 모든 대안 변수가 공통 요인 f('금융 성실도', 비중 LAM)와 꼬리 대상자(TAIL_SHARE)를 공유
+        → 대안 변수끼리 상관이 높아, 합쳐도 AUC가 과하게 오르지 않음
+      * 승인 라벨(approved)의 신용 점수는 _corr_latent()(꼬리 없는 단순 버전, rho=-0.6)로 생성
   - 분포 변환: 비율·점수는 clip, 건수·빈도는 Poisson으로 변환
-      * 변환 과정에서 상관이 약해지므로 RHO를 목표보다 크게 잡고, calibrate_rho()로 재보정
+      * 변환 과정에서 상관이 약해지므로, 상수를 바꾸면 corr_report()로 매번 다시 확인
+        (시나리오 최소 |r| 0.325 → 하한 0.3까지 여유 0.025)
   - 검증 체크: 생성 후 corr_report()로 상관 확인, bias_ratio 변경 시 집단별 승인율·DI 변화 확인
 
 설계 원칙
@@ -56,7 +65,6 @@ XAI 기반 대안신용평가 시스템 - 대안 데이터 시뮬레이터
 import logging              # loader의 로그(컬럼명·타입·결측치)와 스펙 위반 경고 출력용
 from pathlib import Path    # 파일 경로를 다루는 객체
 import sys
-from unittest import result
 import numpy as np          # 난수 생성, 수치 계산
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -99,7 +107,6 @@ TRAD_INFO_COLS = DELINQ_COLS + [
     "NumberRealEstateLoansOrLines",
 ]
 
-# TAIL_PI, TAIL_SHARE, TAIL_CLEAN_RATIO 추가
 THIN_INFO_LOSS = 0.5   # 씬파일러의 기존 변수 값 중 50%를 정보 없는 값으로 교체 (가정값)
 
 # 모델 피처가 아닌 컬럼 (라벨·보호 속성·대리변수) - 전처리 단계에서 제외할 때 참고
@@ -134,34 +141,30 @@ FEATURE_BIAS = {
 }
 
 LAM = 0.8          # 공통 요인 비중 (0.3 → 0.8): 대안변수끼리 정보가 겹쳐, 합쳤을 때 AUC가 덜 오름
-#TAIL_PI = 0.3      # 부도자 중 '꼬리'(값이 크게 나쁜 집단)에 들어가는 비율 (가정값)
-TAIL_SHARE = 0.85        # 기존 그대로
 TAIL_SHARE = 0.85  # 변수끼리 같은 부도자가 꼬리에 들어갈 확률 → 높을수록 합친 AUC가 덜 오름
 # 꼬리 확률 (가정값): 부도 여부가 아니라 기존 연체 기록을 기준으로 정함
 # → 꼬리 = "납부에 어려움을 겪는 사람". 정상 고객도 들어갈 수 있어 정답 표시가 되지 않음
 TAIL_P_DELINQ = 0.5        # 연체 기록 있는 사람이 꼬리에 들어갈 확률 (부도 여부 무관)
 TAIL_P_CLEAN = 0.02        # 연체 기록 없는 사람
-TAIL_DEFAULT_BOOST = 1.5   # 부도자는 확률을 이만큼 곱함 → 타깃 상관을 조절하는 손잡이
+TAIL_DEFAULT_BOOST = 1.7   # 부도자는 확률을 이만큼 곱함 → 타깃 상관을 조절하는 손잡이
 
-# 몸통 상관: 약하게 유지 (편향이 모델에 전달되는 통로). 부호 = 부도와의 상관 방향
+# 몸통 상관: 0.15 → 0.22 (부호는 그대로)
 RHO_BODY = {
-    "telecom_payment_rate":  -0.15,
-    "utility_payment_rate":  -0.15,
-    "spending_consistency":  -0.15,
-    "regular_payment_count":  0.15,
-    "app_login_frequency":   -0.15,
+    "telecom_payment_rate":  -0.22,
+    "utility_payment_rate":  -0.22,
+    "spending_consistency":  -0.22,
+    "regular_payment_count":  0.22,
+    "app_login_frequency":   -0.22,
 }
-'''
-# 몸통 상관: 0.15 → 0.25 (부호는 그대로)
-RHO_BODY = {
-    "telecom_payment_rate":  -0.25,
-    "utility_payment_rate":  -0.25,
-    "spending_consistency":  -0.25,
-    "regular_payment_count":  0.25,
-    "app_login_frequency":   -0.25,
-}
-'''
-# 꼬리 이동 폭(표준편차 단위): |r| 0.3~0.5를 맞추는 손잡이. calibrate_tail_delta()로 재보정
+# 꼬리 이동 폭(표준편차 단위): 고정값. 보정 손잡이가 아님
+#   δ를 키우면 잠재값이 꼬리 여부(flag)에 수렴해 |r|이 corr(flag, 부도) 근처에서 멈춤
+#   (1.0배 → 1.4배로 바꿔도 최소 |r| 0.275 → 0.276) → 타깃 상관은 TAIL_DEFAULT_BOOST, RHO_BODY로 조절
+#   예외: app_login_frequency만 δ=20 사용 (가정값 + 보정 결과)
+#     - 평균 60회/월(하루 약 2회): 주거래 금융앱을 일상적으로 쓰는 고객을 가정 (가정값)
+#     - log 스케일 계수 0.15 → 1 SD 변화가 ±16%(약 ±9회)뿐이라 Poisson 잡음(√60 ≈ 7.7회)과 비슷한 크기
+#       → 같은 δ(4.5)로는 타깃 상관이 다른 변수보다 약함
+#     - 실제 이동량은 계수 × δ = 0.15 × 20 = 3.0 (로그) → 꼬리 대상자는 60 × e^-3 ≈ 3회/월
+#       = "앱을 사실상 쓰지 않는 고객"으로 해석
 TAIL_DELTA = {c: 4.5 for c in ALT_COLS}
 TAIL_DELTA["app_login_frequency"] = 20.0
 
@@ -187,17 +190,6 @@ def _corr_latent(t, rho, f, rng, lam=0.3):
     e = np.sqrt(lam) * -np.sign(rho) * f + np.sqrt(1 - lam) * rng.standard_normal(len(t))  # f를 위험 방향에 맞춰 넣음 (rho가 +인 변수는 -f)
     return rho * s + np.sqrt(1 - rho**2) * e                               # 타깃과의 상관 ≈ rho
 
-'''
-수정 전
-def _tail_flag_maker(t, rng, pi=TAIL_PI, share=TAIL_SHARE):
-    """변수마다 '꼬리' 대상자를 뽑는 함수를 반환. share 확률로 공통 대상자를 공유"""
-    n = len(t)
-    base = (t == 1) & (rng.random(n) < pi)                    # 여러 변수에서 공통으로 나쁜 부도자
-    def next_flag():
-        own = (t == 1) & (rng.random(n) < pi)                 # 이 변수에서만 나쁜 부도자
-        return np.where(rng.random(n) < share, base, own)
-    return next_flag
-'''
 def _tail_flag_maker(t, has_delinq, rng, share=TAIL_SHARE):
     """변수마다 '꼬리' 대상자를 뽑는 함수를 반환. share 확률로 공통 대상자를 공유
     꼬리 확률은 기존 연체 기록으로 정하고 부도자만 조금 높임 (정상 고객도 꼬리에 들어감)
@@ -358,7 +350,7 @@ def add_alt_features(df, seed=42, thin_filer_ratio=0.2, bias_ratio=0.0, approval
 
     df["telecom_payment_rate"]  = np.clip(0.88 + 0.10 * z("telecom_payment_rate"), 0, 1)        # 평균 0.88, 표준편차 약 0.1, 0~1로 자름
     df["utility_payment_rate"]  = np.clip(0.90 + 0.09 * z("utility_payment_rate"), 0, 1)        # 평균 0.90, 표준편차 약 0.09, 0~1로 자름
-    df["spending_consistency"]  = np.clip(70 + 12 * z("spending_consistency"), 0, 100)          # 평균 70, 표준편차 15, 0~100으로 자름
+    df["spending_consistency"]  = np.clip(70 + 12 * z("spending_consistency"), 0, 100)          # 평균 70, 표준편차 12, 0~100으로 자름
     df["regular_payment_count"] = rng.poisson(np.exp(1.2 + 0.35 * z("regular_payment_count")))  # 정기결제 건수: 평균 약 3.5건, 부도와 양의 상관(할부·상환 부담 가정)
     #df["app_login_frequency"]   = rng.poisson(np.exp(2.6 + 0.40 * z("app_login_frequency")))      # 앱 로그인 빈도: 평균 약 14.6회, 부도와 음의 상관
     df["app_login_frequency"] = rng.poisson(np.exp(np.log(60) + 0.15 * z("app_login_frequency")))
@@ -576,31 +568,6 @@ def feature_bias_sweep(df, scales=(0.5, 0.75, 1, 1.25, 1.5), bias_ratio=SCENARIO
     finally:
         FEATURE_BIAS = original   # 오류가 나도 원래 값으로 복구
 
-def calibrate_tail_delta(df, target=0.36, grid=np.arange(2.0, 7.01, 0.25),
-                         cols=ALT_COLS, key="SeriousDlqin2yrs"):
-    """통제/시나리오 중 낮은 쪽 |r|이 target에 가장 가까운 TAIL_DELTA를 변수별로 추천"""
-    global TAIL_DELTA
-    original = TAIL_DELTA
-    rows = []
-    try:
-        for d in grid:
-            TAIL_DELTA = {**original, **{c: d for c in cols}}          # cols만 바꾸고 나머지는 유지
-            ctrl = add_alt_features(df, bias_ratio=CONTROL_BIAS_RATIO)[cols].corrwith(df[key]).abs()
-            scen = add_alt_features(df, bias_ratio=SCENARIO_BIAS_RATIO)[cols].corrwith(df[key]).abs()
-            rows.append(pd.DataFrame({"delta": d, "통제": ctrl, "시나리오": scen}))
-    finally:
-        TAIL_DELTA = original   # 오류가 나도 원래 값으로 복구
-
-    table = pd.concat(rows).rename_axis("변수").reset_index()
-    table["낮은쪽"] = table[["통제", "시나리오"]].min(axis=1)
-    best = table.loc[(table["낮은쪽"] - target).abs().groupby(table["변수"]).idxmin()].set_index("변수")
-    suggestion = {c: float(best.loc[c, "delta"]) for c in cols}
-
-    print(f"[TAIL_DELTA 보정] 목표: 낮은 쪽 |r|={target}")
-    print(best[["delta", "통제", "시나리오"]].round(3).to_string())
-    print("  추천 TAIL_DELTA =", suggestion)
-    return suggestion
-
 def calibrate_bias_ratio(df, target_di=0.8, metric="label", grid=np.round(np.arange(0, 1.01, 0.05), 2), tol=0.02):
     """목표 성별 DI에 가장 가까운 bias_ratio를 찾아 반환 (SCENARIO_BIAS_RATIO를 정할 때 사용)
 
@@ -683,11 +650,6 @@ def main(thin_filer_ratio=0.2, tune=False):
         print(f"\n[FEATURE_BIAS 배율 탐색, bias_ratio={SCENARIO_BIAS_RATIO}]")
         feature_bias_sweep(df, groups=("~34",))
         feature_bias_sweep(df, groups=("55+",))   # 참고용 (값은 바꾸지 않음)
-
-        # 꼬리 폭 보정: 로그인은 필요한 범위가 달라서 따로 실행
-        calibrate_tail_delta(df, cols=["telecom_payment_rate", "utility_payment_rate",
-                                       "spending_consistency", "regular_payment_count"])
-        calibrate_tail_delta(df, grid=np.arange(10, 24.01, 1.0), cols=["app_login_frequency"])
 
 # 직접 실행할 때만 동작 (preprocessor.py 등에서 import할 때는 실행 안 됨)
 if __name__ == "__main__":

@@ -70,7 +70,7 @@ CLIP_QUANTILE = 0.99                           # 수치형 상위 1% 초과 값�
 SCRIPT_DIR = Path(__file__).resolve().parent          # .../src/data
 PROJECT_ROOT = SCRIPT_DIR.parents[1]                  # .../XAI_Simulator-1
 
-DEFAULT_INPUT = SCRIPT_DIR / "결과.csv"                  # 시뮬레이터 결과 CSV
+DEFAULT_INPUT = PROJECT_ROOT / "data" / "processed" / "결과_시나리오.csv"                  # 시뮬레이터 결과 CSV
 DEFAULT_OUT_DIR = PROJECT_ROOT / "data" / "processed"   # 분할 CSV 저장 폴더
 DEFAULT_SAVE = PROJECT_ROOT / "artifacts" / "preprocessor.joblib"
 
@@ -196,7 +196,7 @@ class CreditPreprocessor:
         categorical_pipe = Pipeline([
             ("imputer", SimpleImputer(strategy="most_frequent")),
             # handle_unknown="ignore": 학습 때 없던 범주가 들어와도 에러 없이 모두 0 처리
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+            ("onehot", OneHotEncoder(drop="if_binary", handle_unknown="ignore", sparse_output=False)),
         ])
 
         transformers = [("num", numeric_pipe, self.numeric_cols_)]
