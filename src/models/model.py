@@ -1,6 +1,8 @@
 """
-src/data/model.py
+src/models/model.py
 XAI 기반 대안신용평가 시스템 - 신용평가 모델 학습 / 평가 / MLflow 기록
+
+※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다.
 
 체크리스트 대응
   [모델 학습]
@@ -29,9 +31,7 @@ XAI 기반 대안신용평가 시스템 - 신용평가 모델 학습 / 평가 / 
   - Test(15%) : 최종 성능 보고에만 사용 (선택·기준 결정에 쓰지 않음)
 
 필요 패키지: scikit-learn>=1.2, xgboost, lightgbm, imbalanced-learn, mlflow, joblib
-실행: 프로젝트 최상위 폴더에서  python -m src.data.model
-      (python src/data/model.py 로 실행하면 저장된 전처리기가 'preprocessor' 모듈 이름으로
-       기록되어, API에서 src.data.preprocessor 로 불러올 때 ModuleNotFoundError가 날 수 있음)
+실행: 프로젝트 최상위 폴더에서  python -m src.models.model
 """
 
 from __future__ import annotations
@@ -60,12 +60,9 @@ import mlflow
 import mlflow.sklearn
 from mlflow.tracking import MlflowClient
 
-try:  # 패키지로 import 할 때 (예: python -m src.data.model)
-    from .preprocessor import (DEFAULT_INPUT, DEFAULT_SAVE, PROJECT_ROOT,
-                               RANDOM_STATE, CreditPreprocessor, SplitData)
-except ImportError:  # 스크립트로 직접 실행할 때 (예: python src/data/model.py)
-    from preprocessor import (DEFAULT_INPUT, DEFAULT_SAVE, PROJECT_ROOT,
-                              RANDOM_STATE, CreditPreprocessor, SplitData)
+from src.data.preprocessor import (DEFAULT_INPUT, DEFAULT_SAVE, PROJECT_ROOT,
+                                   RANDOM_STATE, CreditPreprocessor, SplitData)
+from src.data.simulator import ALT_COLS   # 대안변수 목록은 시뮬레이터 한 곳에서 관리
 
 # ----------------------------------------------------------------------
 # 설정
@@ -73,16 +70,8 @@ except ImportError:  # 스크립트로 직접 실행할 때 (예: python src/dat
 MODEL_VERSION = "1.0"                 # 파일명에 들어가는 버전 (재학습 시 여기만 변경)
 MODEL_DIR = PROJECT_ROOT / "models"   # 모델 저장 폴더
 
-# 시뮬레이터가 만든 대안변수 5종 (씬파일러 AUC 향상 비교 시 '미포함 모델'에서 제외)
-ALT_COLS = [
-    "telecom_payment_rate",
-    "utility_payment_rate",
-    "spending_consistency",
-    "regular_payment_count",
-    "app_login_frequency",
-]
-# 씬파일러 여부: preprocessor가 원-핫한 결과 컬럼 (is_thin_filer -> is_thin_filer_1)
-THIN_FILER_COL = "is_thin_filer_1"
+# 씬파일러 여부: preprocessor가 피처가 아닌 sensitive_* 에 담아서 돌려줌
+THIN_FILER_COL = "is_thin_filer"
 
 ALGORITHMS = ["logistic_regression", "xgboost", "lightgbm"]
 IMBALANCE_METHODS = ["class_weight", "smote"]
@@ -231,12 +220,12 @@ def subgroup_auc(y_true: pd.Series, y_score, mask) -> float:
     return float(roc_auc_score(y_true[mask], y_score[mask]))
 
 
-def thin_filer_mask(X: pd.DataFrame) -> np.ndarray:
-    """씬파일러인 행만 True"""
-    if THIN_FILER_COL not in X.columns:
+def thin_filer_mask(sensitive: pd.DataFrame) -> np.ndarray:
+    """씬파일러인 행만 True (preprocessor의 sensitive_* 에서 가져옴)"""
+    if THIN_FILER_COL not in sensitive.columns:
         raise KeyError(f"씬파일러 컬럼 '{THIN_FILER_COL}'이 없습니다. "
-                       "preprocessor.py의 CATEGORICAL_COLS 이름을 확인하세요.")
-    return (X[THIN_FILER_COL] == 1).to_numpy()
+                       "preprocessor.py의 SEGMENT_COLS를 확인하세요.")
+    return (sensitive[THIN_FILER_COL].astype(int) == 1).to_numpy()
 
 
 # ----------------------------------------------------------------------
@@ -263,7 +252,7 @@ def run_experiment(algo: str, imbalance: str, data: SplitData) -> dict:
                "threshold": threshold, "psi": psi(p_train, p_test)}
     metrics.update(evaluate(data.y_val, p_val, threshold, "val"))
     metrics.update(evaluate(data.y_test, p_test, threshold, "test"))
-    metrics["test_auc_thin_filer"] = subgroup_auc(data.y_test, p_test, thin_filer_mask(data.X_test))
+    metrics["test_auc_thin_filer"] = subgroup_auc(data.y_test, p_test, thin_filer_mask(data.sensitive_test))
 
     print(f"  {algo:20s} {imbalance:12s} CV AUC {metrics['cv_auc_mean']:.4f}±{metrics['cv_auc_std']:.4f}"
           f"  Val AUC {metrics['val_auc']:.4f}  Test AUC {metrics['test_auc']:.4f}"
@@ -288,7 +277,7 @@ def thin_filer_uplift(algo: str, imbalance: str, df: pd.DataFrame,
     model.fit(base.X_train, base.y_train)
     p_test = model.predict_proba(base.X_test)[:, 1]
 
-    without_alt = subgroup_auc(base.y_test, p_test, thin_filer_mask(base.X_test))
+    without_alt = subgroup_auc(base.y_test, p_test, thin_filer_mask(base.sensitive_test))
     return {"test_auc_thin_filer_without_alt": without_alt,
             "test_auc_thin_filer_with_alt": with_alt_auc,
             "thin_filer_auc_uplift": with_alt_auc - without_alt,

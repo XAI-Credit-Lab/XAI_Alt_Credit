@@ -2,6 +2,8 @@
 src/data/simulator.py
 XAI 기반 대안신용평가 시스템 - 대안 데이터 시뮬레이터
 
+※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다.
+
 체크리스트 대응
   1) 대안 변수 5개 생성   : add_alt_features()
                             telecom_payment_rate(통신비 정상납부율), utility_payment_rate(공과금 납부율),
@@ -60,16 +62,17 @@ XAI 기반 대안신용평가 시스템 - 대안 데이터 시뮬레이터
 실행
   직접 실행     : python src/data/simulator.py
   모듈 실행     : 프로젝트 루트에서 python -m src.data.simulator
-  값 보정 포함  : main(tune=True) → FEATURE_BIAS 배율, RHO, bias_ratio 추천값 출력
+  값 보정 포함  : python -c "from src.data.simulator import main; main(tune=True)"
+                  → FEATURE_BIAS 배율 탐색(~34, 55+), 목표 성별 DI 기준 bias_ratio 추천값 출력
 """
 import logging              # loader의 로그(컬럼명·타입·결측치)와 스펙 위반 경고 출력용
 from pathlib import Path    # 파일 경로를 다루는 객체
 import sys
 import numpy as np          # 난수 생성, 수치 계산
-import pandas as pd
+import pandas as pd         # CSV/데이터프레임 처리
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split         # CSV/데이터프레임 처리
+from sklearn.model_selection import train_test_split        
 
 # 연령 구간 정의와 DI 계산 함수는 공정성 모듈에서 가져옴
 # → 시뮬레이터 리포트와 공정성 검증이 같은 정의를 써야 보고서의 DI 값이 어긋나지 않음
@@ -123,24 +126,27 @@ YOUNG_ADULT_AGE = (21, 29)   # 사회초년생 페르소나 나이 범위
 MIN_TEST_DEFAULTS = 100
 TEST_SIZE = 0.15
 
+# 연령대 라벨은 공정성 모듈의 AGE_LABELS 를 그대로 사용 (모듈마다 표기가 달라도 편향이 사라지지 않게)
+AGE_YOUNG, AGE_MID, AGE_OLD = AGE_LABELS   # 예: "~34", "35~54", "55+"
+
 # 승인 라벨 편향 (가정값): 불리한 집단의 신용 점수에서 bias_ratio × 값 만큼 감점
-BIAS_PENALTY = {"female": 1.0, "~34": 0.7, "55+": 0.8}
+BIAS_PENALTY = {"female": 1.0, AGE_YOUNG: 0.7, AGE_OLD: 0.8}
 
 # 대안변수 편향 (가정값): 불리한 집단의 잠재값을 몇 표준편차 낮출지. 실제 = bias_ratio × 값
 # 부도와 무관하게 그룹만 보고 낮춤 → 모델이 부도 라벨로 학습해도 이 편향을 배우게 됨
 # female 편향은 5개 변수 모두에 같은 방향(불리한 쪽)으로 넣음
 # → 일부 변수에만 넣으면 모델이 "이 변수들만 낮은 패턴"으로 성별을 알아채 편향을 보정해 버림
 
-# FEATURE_BIAS: female 값만 3배 (0.5 → 1.5, 정기결제는 -0.5 → -1.5), 나머지는 그대로
+# female 편향(1.5)은 연령 편향보다 크게 설정 (모델 기준 성별 DI가 0.8 아래로 내려가도록 보정한 값)
 FEATURE_BIAS = {
-    "telecom_payment_rate":  {"female": 1.5, "55+": 0.5},               # 통신비가 배우자·자녀 명의라 기록 불리
-    "utility_payment_rate":  {"female": 1.5, "~34": 1.0},               # 공과금이 본인 명의 아님(주부·부모와 동거)
-    "spending_consistency":  {"female": 1.5, "~34": 0.8, "55+": 0.7},   # 경력단절·사회초년생·은퇴로 소비 변동
-    "regular_payment_count": {"female": -1.5, "~34": -0.6},             # 부도와 +상관이라 불리하게 = 늘림 (가계 고정지출을 본인 명의로 결제)
-    "app_login_frequency":   {"female": 1.5, "55+": 0.6},               # 가계 금융을 배우자 명의 앱으로 관리 / 고령층 디지털 격차
+    "telecom_payment_rate":  {"female": 1.5, AGE_OLD: 0.5},               # 통신비가 배우자·자녀 명의라 기록 불리
+    "utility_payment_rate":  {"female": 1.5, AGE_YOUNG: 1.0},               # 공과금이 본인 명의 아님(주부·부모와 동거)
+    "spending_consistency":  {"female": 1.5, AGE_YOUNG: 0.8, AGE_OLD: 0.7},   # 경력단절·사회초년생·은퇴로 소비 변동
+    "regular_payment_count": {"female": -1.5, AGE_YOUNG: -0.6},           # 부도와 +상관이라 불리하게 = 늘림 (가계 고정지출을 본인 명의로 결제)
+    "app_login_frequency":   {"female": 1.5, AGE_OLD: 0.6},               # 가계 금융을 배우자 명의 앱으로 관리 / 고령층 디지털 격차
 }
 
-LAM = 0.8          # 공통 요인 비중 (0.3 → 0.8): 대안변수끼리 정보가 겹쳐, 합쳤을 때 AUC가 덜 오름
+LAM = 0.8          # 공통 요인 비중: 대안변수끼리 정보가 겹쳐, 합쳤을 때 AUC가 덜 오름
 TAIL_SHARE = 0.85  # 변수끼리 같은 부도자가 꼬리에 들어갈 확률 → 높을수록 합친 AUC가 덜 오름
 # 꼬리 확률 (가정값): 부도 여부가 아니라 기존 연체 기록을 기준으로 정함
 # → 꼬리 = "납부에 어려움을 겪는 사람". 정상 고객도 들어갈 수 있어 정답 표시가 되지 않음
@@ -148,7 +154,7 @@ TAIL_P_DELINQ = 0.5        # 연체 기록 있는 사람이 꼬리에 들어갈 
 TAIL_P_CLEAN = 0.02        # 연체 기록 없는 사람
 TAIL_DEFAULT_BOOST = 1.7   # 부도자는 확률을 이만큼 곱함 → 타깃 상관을 조절하는 손잡이
 
-# 몸통 상관: 0.15 → 0.22 (부호는 그대로)
+# 몸통 상관 (부도와 음의 상관은 -, 정기결제만 +)
 RHO_BODY = {
     "telecom_payment_rate":  -0.22,
     "utility_payment_rate":  -0.22,
@@ -186,7 +192,6 @@ PERSONA_WEIGHT = {PERSONA_CODE["일반"]: 1.0,
 def _corr_latent(t, rho, f, rng, lam=0.3):
     """타깃 t와 상관계수가 약 rho인 표준정규 잠재값 생성"""
     s = (t - t.mean()) / t.std()                                           # 표준화한 타깃 (평균 0, 분산 1)
-    #e = np.sqrt(lam) * f + np.sqrt(1 - lam) * rng.standard_normal(len(t))  # 노이즈 (lam 비중은 공통 요인 f, 나머지는 개별 난수)
     e = np.sqrt(lam) * -np.sign(rho) * f + np.sqrt(1 - lam) * rng.standard_normal(len(t))  # f를 위험 방향에 맞춰 넣음 (rho가 +인 변수는 -f)
     return rho * s + np.sqrt(1 - rho**2) * e                               # 타깃과의 상관 ≈ rho
 
@@ -312,7 +317,7 @@ def add_approval_label(df, t, f, rng, bias_ratio, approval_rate=0.7):
     """과거 승인 결과(approved)를 만든다. bias_ratio가 클수록 그룹 간 승인율 격차가 커진다."""
     base = _corr_latent(t, -0.6, f, rng)              # 부도자일수록 낮은 신용 점수
 
-    # 불리한 집단 감점: 여성 + 연령대(~34: 1.0, 55+: 0.5, 35~54: 0)
+    # 불리한 집단 감점: BIAS_PENALTY 기준 (여성 1.0, ~34 0.7, 55+ 0.8, 35~54 0)
     age_pen = df["age_group"].map(BIAS_PENALTY).fillna(0).to_numpy()
     penalty = (df["gender"] == 1).to_numpy() * BIAS_PENALTY["female"] + age_pen
     score = base - bias_ratio * penalty
@@ -352,8 +357,7 @@ def add_alt_features(df, seed=42, thin_filer_ratio=0.2, bias_ratio=0.0, approval
     df["utility_payment_rate"]  = np.clip(0.90 + 0.09 * z("utility_payment_rate"), 0, 1)        # 평균 0.90, 표준편차 약 0.09, 0~1로 자름
     df["spending_consistency"]  = np.clip(70 + 12 * z("spending_consistency"), 0, 100)          # 평균 70, 표준편차 12, 0~100으로 자름
     df["regular_payment_count"] = rng.poisson(np.exp(1.2 + 0.35 * z("regular_payment_count")))  # 정기결제 건수: 평균 약 3.5건, 부도와 양의 상관(할부·상환 부담 가정)
-    #df["app_login_frequency"]   = rng.poisson(np.exp(2.6 + 0.40 * z("app_login_frequency")))      # 앱 로그인 빈도: 평균 약 14.6회, 부도와 음의 상관
-    df["app_login_frequency"] = rng.poisson(np.exp(np.log(60) + 0.15 * z("app_login_frequency")))
+    df["app_login_frequency"] = rng.poisson(np.exp(np.log(60) + 0.15 * z("app_login_frequency"))) # 앱 로그인 빈도: 평균 약 60회/월, 부도와 음의 상관
 
     df = inject_thin_filers(df, rng, thin_filer_ratio, thin_info_loss)
     df = add_approval_label(df, t, f, rng, bias_ratio, approval_rate)
@@ -436,7 +440,9 @@ def feature_group_auc_report(df, target="SeriousDlqin2yrs", seed=42):
                       "비씬": roc_auc_score(y[~thin], p[~thin])}
     table = pd.DataFrame(rows).T
     print(table.round(3).to_string())
-    print(f"  씬파일러 uplift(통합-전통): {table.loc['통합', '씬'] - table.loc['전통', '씬']:+.3f}")
+   # print(f"  씬파일러 uplift(통합-전통): {table.loc['통합', '씬'] - table.loc['전통', '씬']:+.3f}")
+    uplift = float(table.at['통합', '씬']) - float(table.at['전통', '씬'])
+    print(f"  씬파일러 uplift(통합-전통): {uplift:+.3f}")
     return table
 
 def alt_feature_report(df):
@@ -510,8 +516,8 @@ def bias_ratio_check(df, ratios=(0.0, 0.25, 0.5, 0.75, 1.0), tol=0.01):
         rows.append({
             "bias_ratio": br,
             "라벨_성별DI": gender_di(r, r["approved"]),
-            "라벨_~34DI": label_age["~34"],
-            "라벨_55+DI": label_age["55+"],
+            f"라벨_{AGE_YOUNG}DI": label_age[AGE_YOUNG],
+            f"라벨_{AGE_OLD}DI": label_age[AGE_OLD],
             "대안변수_성별DI": feature_di_report(r, verbose=False),
         })
 
@@ -607,7 +613,7 @@ def load_base():
 
 
 def main(thin_filer_ratio=0.2, tune=False):
-    # loader는 logger.info로 출력하므로, 이 설정이 있어야 컬럼명·타입·결측치 요약이 보임
+    # 시뮬레이터의 WARNING 로그(스펙 위반, 표본 부족 등) 출력용
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     df = load_base()
@@ -632,7 +638,7 @@ def main(thin_filer_ratio=0.2, tune=False):
 
         approval_report(result)      # 라벨 기준 DI (BIAS_PENALTY 영향)
         feature_di_report(result)    # 대안변수 기준 DI (FEATURE_BIAS 영향)
-        model_di_report(result)      # 모델 기준 DI (최종 판단 기준)  ← 추가
+        model_di_report(result)      # 모델 기준 DI (최종 판단 기준)
         feature_group_auc_report(result)  # 전통/대안/통합 AUC, 씬파일러 uplift
         alt_feature_report(result)   # 그룹별 대안변수 평균
 
@@ -648,8 +654,9 @@ def main(thin_filer_ratio=0.2, tune=False):
     # 보정용 탐색 (값을 다시 정할 때만 tune=True)
     if tune:
         print(f"\n[FEATURE_BIAS 배율 탐색, bias_ratio={SCENARIO_BIAS_RATIO}]")
-        feature_bias_sweep(df, groups=("~34",))
-        feature_bias_sweep(df, groups=("55+",))   # 참고용 (값은 바꾸지 않음)
+        feature_bias_sweep(df, groups=(AGE_YOUNG,))
+        feature_bias_sweep(df, groups=(AGE_OLD,))   # 참고용 (값은 바꾸지 않음)
+        calibrate_bias_ratio(df, target_di=0.8, metric="label")   # 목표 성별 DI 기준 bias_ratio 추천
 
 # 직접 실행할 때만 동작 (preprocessor.py 등에서 import할 때는 실행 안 됨)
 if __name__ == "__main__":

@@ -1,7 +1,16 @@
+# 파이썬 캐시
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# MLflow 로컬 기록
 mlruns/
 mlflow.db
-artifacts/
-models/
+
+# 데이터 (용량이 크고 재생성 가능)
 data/processed/
+src/data/*.csv
+backup_*/
+
+# 환경 변수 (비밀값). 템플릿인 .env.example 은 올림
+.env

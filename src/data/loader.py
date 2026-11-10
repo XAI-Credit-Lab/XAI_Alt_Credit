@@ -1,4 +1,7 @@
-"""Give Me Some Credit 데이터셋 로더."""
+"""
+Give Me Some Credit 데이터셋 로더.
+실행 방법 : python -m src.data.loader
+"""
 import logging
 import os
 from pathlib import Path
@@ -33,7 +36,9 @@ def load_gmsc(path: Optional[Union[str, Path]] = None) -> pd.DataFrame:
         "dtype": df.dtypes.astype(str),
         "missing_ratio(%)": (df.isna().mean() * 100).round(2),
     })
-    logger.info("Loaded %s | shape=%s\n%s", path.name, df.shape, summary.to_string())
+    msg = f"[loader] {path.name} 로드 완료 | shape={df.shape}\n{summary.to_string()}"
+    print(msg)
+    logger.debug(msg)
     return df
 
 

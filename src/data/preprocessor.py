@@ -2,11 +2,15 @@
 src/data/preprocessor.py
 XAI 기반 대안신용평가 시스템 - 전처리 및 데이터 분할 모듈
 
+※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다.
+
 체크리스트 대응
   1) 결측치 처리      : 수치형 -> 중앙값(median) 대체 (+ 결측 여부 지시변수 추가)
                         범주형 -> 최빈값 대체, 타깃이 결측인 행은 삭제
   2) 수치형 스케일링  : StandardScaler (평균 0, 표준편차 1)
-  3) 범주형 인코딩    : One-Hot Encoding
+  3) 범주형 인코딩    : One-Hot Encoding 파이프라인 구현
+                        (GMSC 원본에는 범주형 피처가 없고, gender·age_group·persona는
+                         보호 속성/대리변수라 제외 → 현재 적용 대상 0개. 범주형 컬럼이 추가되면 자동 적용)
   4) 분할 비율        : Train/Validation/Test = 70:15:15
   5) 층화 분할        : stratify=y 로 클래스(부도) 비율 유지
 
@@ -18,11 +22,14 @@ XAI 기반 대안신용평가 시스템 - 전처리 및 데이터 분할 모듈
   - 보호 속성(민감 속성) 처리
       * gender, age_group 은 모델 피처에서 빼고, 공정성 평가(AIF360/Fairlearn)용으로
         분할 인덱스에 맞춰 따로 돌려준다.
-      * age(원본 나이), persona(주부=여성, 사회초년생=20~25세 기준)는 보호 속성의
+      * age(원본 나이), persona(주부=여성, 사회초년생=21~29세 기준)는 보호 속성의
         대리변수(proxy)이므로 피처에서 제외한다.
+      * is_thin_filer 는 피처에서 빼고, 씬파일러 AUC 평가용으로 sensitive_* 에 함께 돌려준다.
   - 씬파일러 신호 보존
       * 중앙값으로 채우기 전에 '원래 결측이었는지'를 0/1 컬럼으로 남긴다
         (SimpleImputer add_indicator=True).
+      * GMSC 연체 컬럼의 96/98 코드(269건, 부도율 54.6%)는 past_due_code_flag 로
+        따로 남긴 뒤 결측 처리한다 (씬파일러 결측과 섞이지 않도록).
   - SHAP에서 쓸 수 있도록 변환 후 피처 이름을 보존한다.
 
 요구 사항: scikit-learn >= 1.2 (sparse_output, set_output 사용)
@@ -50,10 +57,12 @@ TARGET = "SeriousDlqin2yrs"                    # 타깃: 2년 내 90일 이상 �
 
 SENSITIVE_COLS = ["gender", "age_group"]       # 보호 속성: 피처 X, 공정성 평가용으로 반환
 PROXY_COLS = ["age", "persona"]                # 보호 속성의 대리변수: 피처 X
-# 피처로 쓸 범주형 -> One-Hot Encoding 적용 (문자열/bool 컬럼은 자동 추가)
-# is_thin_filer: 시뮬레이터의 씬파일러 판정 결과 (True/False 또는 0/1)
+# is_thin_filer: 시뮬레이터의 씬파일러 판정 결과. 피처로 쓰지 않고 씬파일러 AUC 평가용으로 반환
 #   ※ 시뮬레이터에서 저장한 컬럼 이름과 같아야 함
-CATEGORICAL_COLS = ["is_thin_filer"]
+SEGMENT_COLS = ["is_thin_filer"]               # 평가용 집단 구분: 피처 X
+EVAL_COLS = SENSITIVE_COLS + SEGMENT_COLS      # 분할 인덱스에 맞춰 따로 반환할 컬럼
+# 피처로 쓸 범주형 -> One-Hot Encoding 적용 (문자열/bool 컬럼은 자동 추가)
+CATEGORICAL_COLS: list[str] = []
 DROP_COLS = ["Unnamed: 0"]                     # ID 등
 LEAK_KEYWORDS = ["approv", "승인"]             # 이 단어가 들어간 컬럼은 정답 누수로 보고 제외
 
@@ -82,13 +91,17 @@ RANDOM_STATE = 42
 # 이상치 상한 자르기 (Train 분위수로 fit -> 누수 없음)
 # ----------------------------------------------------------------------
 class QuantileClipper(BaseEstimator, TransformerMixin):
-    """각 수치형 컬럼을 Train 기준 q 분위수로 상한 처리. 결측은 그대로 둔다."""
+    """각 수치형 컬럼을 Train 기준 q 분위수로 상한 처리. 결측은 그대로 두고, 0/1 이진 컬럼은 자르지 않는다."""
 
     def __init__(self, q: float = CLIP_QUANTILE):
         self.q = q
 
     def fit(self, X, y=None):
-        self.upper_ = np.nanquantile(np.asarray(X, dtype=float), self.q, axis=0)
+        arr = np.asarray(X, dtype=float)
+        self.upper_ = np.nanquantile(arr, self.q, axis=0)
+        # 0/1 이진 컬럼은 자르지 않음 (드문 1이 상한 0으로 잘려 사라지는 것 방지)
+        is_binary = np.array([np.isin(col[~np.isnan(col)], [0, 1]).all() for col in arr.T])
+        self.upper_ = np.where(is_binary, np.inf, self.upper_)
         self.n_features_in_ = self.upper_.shape[0]
         if hasattr(X, "columns"):
             self.feature_names_in_ = np.asarray(X.columns, dtype=object)
@@ -119,6 +132,10 @@ class SplitData:
     sensitive_train: pd.DataFrame
     sensitive_val: pd.DataFrame
     sensitive_test: pd.DataFrame
+    # 변환 전 원래 값 (거절 사유 current_value, CV용)
+    raw_train: pd.DataFrame | None = None 
+    raw_val: pd.DataFrame | None = None
+    raw_test: pd.DataFrame | None = None
 
 
 class CreditPreprocessor:
@@ -137,6 +154,17 @@ class CreditPreprocessor:
         self.categorical_cols_: list[str] = []
         self.dropped_cols_: list[str] = []
         self.transformer_: ColumnTransformer | None = None
+        self.input_cols_: list[str] = []
+
+    @staticmethod
+    def _fix_past_due(df: pd.DataFrame) -> pd.DataFrame:
+        """96/98 기록 이상 코드를 별도 플래그로 남긴 뒤 결측 처리
+        (씬파일러의 결측과 기록 이상 고객이 같은 결측 지시변수로 섞이지 않게)"""
+        cols = [c for c in PAST_DUE_COLS if c in df.columns]
+        df["past_due_code_flag"] = df[cols].isin(PAST_DUE_INVALID).any(axis=1).astype(int)
+        for c in cols:
+            df[c] = df[c].where(~df[c].isin(PAST_DUE_INVALID), np.nan)
+        return df
 
     # ------------------------------------------------------------------
     # 0. 원본 정리: 누수/ID 컬럼 제거, GMSC 코드값 결측화
@@ -152,9 +180,8 @@ class CreditPreprocessor:
         self.dropped_cols_ = drop
         df = df.drop(columns=drop)
 
-        for c in PAST_DUE_COLS:
-            if c in df.columns:
-                df[c] = df[c].where(~df[c].isin(PAST_DUE_INVALID), np.nan)
+        df = self._fix_past_due(df)
+
         return df
 
     # ------------------------------------------------------------------
@@ -240,10 +267,10 @@ class CreditPreprocessor:
         y = df[TARGET].astype(int)
         X = df.drop(columns=[TARGET])
 
-        sensitive = X[[c for c in SENSITIVE_COLS if c in X.columns]].copy()
-        X = X.drop(columns=[c for c in SENSITIVE_COLS + PROXY_COLS if c in X.columns])
-
+        sensitive = X[[c for c in EVAL_COLS if c in X.columns]].copy()
+        X = X.drop(columns=[c for c in EVAL_COLS + PROXY_COLS if c in X.columns])
         self._resolve_columns(X)
+        self.input_cols_ = list(X.columns)
         X = self._to_category_str(X, self.categorical_cols_)
         X_train, X_val, X_test, y_train, y_val, y_test = self.split(X, y)
 
@@ -258,6 +285,7 @@ class CreditPreprocessor:
             sensitive.loc[X_train.index],
             sensitive.loc[X_val.index],
             sensitive.loc[X_test.index],
+            raw_train=X_train, raw_val=X_val, raw_test=X_test,
         )
         self.report(data)
         return data
@@ -269,10 +297,13 @@ class CreditPreprocessor:
         """학습된 전처리를 새 데이터(API /predict 입력 등)에 그대로 적용"""
         if self.transformer_ is None:
             raise RuntimeError("먼저 process()로 학습해야 합니다.")
-        df = df.copy()
-        for c in PAST_DUE_COLS:
-            if c in df.columns:
-                df[c] = df[c].where(~df[c].isin(PAST_DUE_INVALID), np.nan)
+        df = self._fix_past_due(df.copy())
+
+        # 학습 때 컬럼에 맞춤: 없는 컬럼은 결측 → 중앙값 대체, 남는 컬럼(age 등)은 버림
+        missing = set(self.input_cols_) - set(df.columns)
+        if missing:
+            print(f"[preprocessor] 입력에 없는 컬럼은 중앙값으로 대체: {sorted(missing)}")
+        df = df.reindex(columns=self.input_cols_)
         df = self._to_category_str(df, self.categorical_cols_)
         return self.transformer_.transform(df)
 
@@ -310,7 +341,11 @@ class CreditPreprocessor:
             getattr(data, f"X_{name}").to_csv(out / f"X_{name}.csv")
             getattr(data, f"y_{name}").to_csv(out / f"y_{name}.csv")
             getattr(data, f"sensitive_{name}").to_csv(out / f"sensitive_{name}.csv")
-
+            # 변환 전 원래 값 (거절 사유 current_value, CV용)
+            raw = getattr(data, f"raw_{name}")
+            if raw is not None:
+                raw.to_csv(out / f"raw_{name}.csv")
+                
     def save(self, path: str | Path) -> None:
         """FastAPI /predict, MLflow에서 같은 전처리를 재사용하기 위해 저장"""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -322,6 +357,10 @@ class CreditPreprocessor:
 
 
 if __name__ == "__main__":
+    if not __package__:
+        raise SystemExit("프로젝트 루트에서 python -m src.data.preprocessor 로 실행하세요 "
+                         "(직접 실행하면 저장된 joblib을 API에서 불러올 수 없음)")
+
     import argparse
 
     parser = argparse.ArgumentParser(description="신용평가 데이터 전처리 및 70:15:15 분할")

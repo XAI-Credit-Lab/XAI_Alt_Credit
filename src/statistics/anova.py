@@ -1,6 +1,8 @@
 """
 src/statistics/anova.py
 
+※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다.
+
 One-way ANOVA 기반 모델 성능 비교 모듈.
 
   검증 1 (test_1_feature_group): 피처 그룹별 모델(전통 Only / 대안 Only / 통합) AUC 비교
@@ -14,7 +16,7 @@ p < alpha 인 경우 사후 검정(Tukey HSD) 결과가 포함된다.
 관측치(표본)는 Repeated Stratified K-Fold 의 fold별 AUC 이다.
 ※ 학습 데이터(Train split)만 사용해야 한다. 테스트 라벨을 여기에 넣지 말 것.
 
-모델 연결 (src/data/model.py 와 연동):
+모델 연결 (src/models/model.py 와 연동):
   - 비교 대상 모델은 model.py 가 저장한 최종 모델 파일을 불러와 사용한다.
       models/logistic_regression_v1.0.pkl, xgboost_v1.0.pkl, lightgbm_v1.0.pkl
   - 검증 1 에 쓸 모델은 models/model_meta_v1.0.json 의 best_model 이다.
@@ -23,7 +25,7 @@ p < alpha 인 경우 사후 검정(Tukey HSD) 결과가 포함된다.
   - 데이터도 model.py 와 같은 CreditPreprocessor 로 전처리한 X_train 을 사용한다.
 
 실행: 프로젝트 최상위 폴더에서  python -m src.statistics.anova
-      (먼저 python -m src.data.model 로 모델 파일이 만들어져 있어야 함)
+      (먼저 python -m src.models.model 로 모델 파일이 만들어져 있어야 함)
 
 전체 흐름:
   데이터 → 모델별 fold AUC 수집 → ANOVA(F, p, η²) → 유의하면 Tukey HSD
@@ -42,7 +44,7 @@ p < alpha 인 경우 사후 검정(Tukey HSD) 결과가 포함된다.
 # =========================================================================== #
 
 # ---- 표준 라이브러리 (파이썬 기본 내장, 설치 불필요) ----
-import argparse   # 터미널에서 --data, --mlflow 같은 옵션을 받기 위함. main()을 안 쓰면 삭제 가능
+import argparse   # 터미널에서 --mlflow 옵션을 받기 위함
 import json       # 결과 dict ↔ JSON 파일 변환. API 응답도 JSON이라 가장 자연스러운 저장 방식
 import logging    # print 대신 로그 출력 (INFO, WARNING 등 레벨 구분)
 import math       # NaN, 무한대(inf) 체크용
@@ -81,9 +83,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # 피처 목록은 여기서 하드코딩하지 않는다.
-#   - 대안 변수 5종: src/data/model.py 의 ALT_COLS 를 그대로 사용
+#   - 대안 변수 5종: src/models/model.py 의 ALT_COLS 를 그대로 사용
 #   - 전통 변수   : 전처리된 X_train 컬럼 중 ALT_COLS 를 뺀 나머지 전부
-#                  (원-핫된 is_thin_filer_1 등도 자동으로 포함됨)
+#                  (결측 지시변수 missingindicator_xxx 는 원래 변수 xxx 의 그룹을 따름)
 # → preprocessor 에서 컬럼이 바뀌어도 이 파일은 고칠 필요가 없다.
 
 # model.py 의 알고리즘 키 → ANOVA 결과에 표시할 이름 (노션 예시와 같은 표기)
@@ -150,18 +152,6 @@ def _to_pvalue(value: Any) -> Optional[float]:
     예) 0.000000000032144 → 3.214e-11  (round(…, 6) 이면 0.0 이 돼버림)"""
     v = _to_float(value, ndigits=None)
     return None if v is None else float(f"{v:.4g}")
-'''
-def _to_float(value: Any, ndigits: int = 6) -> Optional[float]:
-    """numpy 값을 JSON 직렬화 가능한 float 로 변환 (NaN/inf → None)."""
-    if value is None:          # None 이면 그대로 None
-        return None
-    # np.float64 등을 파이썬 float 로 (json.dumps 가 numpy 타입을 못 다루는 경우 대비)
-    value = float(value)
-    # NaN/무한대는 JSON 표준에 없다 → None(JSON 의 null)으로 바꿔 API 응답이 깨지지 않게
-    if math.isnan(value) or math.isinf(value):
-        return None
-    return round(value, ndigits)  # 소수점 자리 정리
-'''
 
 def interpret_eta_squared(eta_squared: Optional[float]) -> str:
     """노션 가이드의 η² 해석 기준."""
@@ -403,15 +393,17 @@ def cross_val_auc_scores(estimator, X: pd.DataFrame, y: pd.Series, config: Anova
 
 
 def split_feature_groups(columns: Sequence[str]) -> Dict[str, List[str]]:
-    """전처리된 컬럼을 전통 / 대안 피처로 나눈다."""
-    # 함수 안에서 import: model.py 는 xgboost, mlflow 등을 top-level 에서 import 하므로
-    # 이 파일을 import 하는 것만으로 그 패키지들이 필요해지지 않게 하기 위함
-    from src.data.model import ALT_COLS
+    """전처리된 컬럼을 전통 / 대안 피처로 나눈다.
+    결측 지시변수(missingindicator_xxx)는 원래 변수 xxx 의 그룹을 따른다."""
+    from src.models.model import ALT_COLS
 
-    alternative = [c for c in ALT_COLS if c in columns]        # 대안 변수 5종 (있는 것만)
-    traditional = [c for c in columns if c not in ALT_COLS]    # 나머지 전부 = 전통 변수
-    if len(alternative) != len(ALT_COLS):
-        missing = sorted(set(ALT_COLS) - set(alternative))
+    def base(c: str) -> str:
+        return c.removeprefix("missingindicator_")
+
+    alternative = [c for c in columns if base(c) in ALT_COLS]
+    traditional = [c for c in columns if base(c) not in ALT_COLS]
+    missing = sorted(set(ALT_COLS) - {base(c) for c in alternative})
+    if missing:
         raise KeyError(f"전처리 데이터에 대안 변수가 없습니다: {missing} (시뮬레이터 결과 CSV 인지 확인)")
     return {"traditional": traditional, "alternative": alternative}
 
@@ -424,13 +416,13 @@ def load_final_estimators() -> Dict[str, Any]:
     둘 다 컬럼 이름에 의존하는 전처리를 포함하지 않으므로, 검증 1 에서 피처 일부만 넣어도 동작한다.
     """
     import joblib
-    from src.data.model import ALGORITHMS, MODEL_DIR, MODEL_VERSION
+    from src.models.model import ALGORITHMS, MODEL_DIR, MODEL_VERSION
 
     estimators = {}
     for algo in ALGORITHMS:   # ["logistic_regression", "xgboost", "lightgbm"]
         path = MODEL_DIR / f"{algo}_v{MODEL_VERSION}.pkl"   # 예: models/xgboost_v1.0.pkl
         if not path.exists():
-            raise FileNotFoundError(f"모델 파일이 없습니다: {path} (먼저 python -m src.data.model 실행)")
+            raise FileNotFoundError(f"모델 파일이 없습니다: {path} (먼저 python -m src.models.model 실행)")
         # 학습된 모델을 그대로 담아도 된다.
         # cross_val_auc_scores() 안의 clone() 이 학습 결과는 버리고 설정만 복사하기 때문.
         estimators[ALGORITHM_DISPLAY_NAMES.get(algo, algo)] = joblib.load(path)
@@ -440,11 +432,11 @@ def load_final_estimators() -> Dict[str, Any]:
 
 def load_best_model_name() -> str:
     """model_meta_v1.0.json 에 기록된 최종 모델의 표시 이름 (검증 1 에 사용)."""
-    from src.data.model import MODEL_DIR, MODEL_VERSION
+    from src.models.model import MODEL_DIR, MODEL_VERSION
 
     meta_path = MODEL_DIR / f"model_meta_v{MODEL_VERSION}.json"
     if not meta_path.exists():
-        raise FileNotFoundError(f"메타 파일이 없습니다: {meta_path} (먼저 python -m src.data.model 실행)")
+        raise FileNotFoundError(f"메타 파일이 없습니다: {meta_path} (먼저 python -m src.models.model 실행)")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     algo = meta["best_model"]["algorithm"]          # 예: "xgboost"
     return ALGORITHM_DISPLAY_NAMES.get(algo, algo)  # 예: "XGBoost"
@@ -589,6 +581,12 @@ def run_all_anova(
         },
     }
 
+    # 제약사항: "최소 1개 이상 검증에서 p < 0.05"
+    any_sig = any(results[k]["is_significant"] for k in ("test_1_feature_group", "test_2_algorithm"))
+    results["meta"]["requirement_any_significant"] = any_sig
+    if not any_sig:
+        logger.warning("[ANOVA] 두 검증 모두 p >= %s → 제약사항 'ANOVA 유의성' 미충족", config.alpha)
+
     if save:
         save_results(results, config.output_path)   # JSON 파일로 저장
     if log_mlflow:
@@ -627,7 +625,7 @@ def log_results_to_mlflow(results: Dict[str, Any], run_name: str = "anova_valida
         import mlflow
         # model.py 와 같은 서버·같은 실험("credit-scoring")에 기록한다.
         # 서버가 꺼져 있으면 model.py 와 똑같이 로컬 sqlite 로 대체된다.
-        from src.data.model import DEFAULT_TRACKING_URI, setup_mlflow
+        from src.models.model import DEFAULT_TRACKING_URI, setup_mlflow
     except ImportError:
         # mlflow 가 없어도 전체가 죽지 않게 경고만 남기고 넘어감
         logger.warning("mlflow 미설치 → MLflow 로깅 생략")
@@ -652,7 +650,7 @@ def log_results_to_mlflow(results: Dict[str, Any], run_name: str = "anova_valida
 # =========================================================================== #
 # 명령줄 실행부
 #   사용법: python -m src.statistics.anova [--mlflow]
-#   순서  : python -m src.data.model (모델 학습) → python -m src.statistics.anova
+#   순서  : python -m src.models.model (모델 학습) → python -m src.statistics.anova
 # =========================================================================== #
 def main() -> None:
     parser = argparse.ArgumentParser(description="ANOVA 통계 검증 (Train split 전용)")
