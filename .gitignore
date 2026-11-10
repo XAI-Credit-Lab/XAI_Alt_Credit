@@ -7,8 +7,9 @@ __pycache__/
 mlruns/
 mlflow.db
 
-# 데이터 (원본·백업은 올리지 않음. data/processed 는 팀 공유용으로 올림)
-src/data/*.csv
+# 데이터 (구버전·백업은 올리지 않음. 원본 cs-training.csv 와 data/processed 는 올림)
+src/data/결과.csv
+src/data/상관행렬.csv
 backup_*/
 data/processed/결과_구버전.csv
 
