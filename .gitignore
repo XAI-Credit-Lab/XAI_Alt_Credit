@@ -7,10 +7,10 @@ __pycache__/
 mlruns/
 mlflow.db
 
-# 데이터 (용량이 크고 재생성 가능)
-data/processed/
+# 데이터 (원본·백업은 올리지 않음. data/processed 는 팀 공유용으로 올림)
 src/data/*.csv
 backup_*/
+data/processed/결과_구버전.csv
 
 # 환경 변수 (비밀값). 템플릿인 .env.example 은 올림
 .env
