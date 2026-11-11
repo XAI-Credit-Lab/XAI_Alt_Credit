@@ -1,5 +1,6 @@
 # src/api/schema.py
 # pydantic request/response schema 정의
+# ※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다
 
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Dict, Optional
@@ -58,11 +59,11 @@ class explain_request(predict_request): # 입력값-/predict입력값 상속
     pass
 class reason(BaseModel): # 거절 사유
     feature : str # 변수명
-    current_value : float # 현재 값
+    current_value : Optional[float]   # 미입력이면 null
     shap_contribution : float # shap 기여도
     explanation : str # 자연어 설명
 class explain_response(BaseModel):
-    base_value: float ###
+    approval_status: str
     rejection_reasons : List[reason] # 거절 사유 5개
     shap_values : dict[str, float]
 
@@ -98,20 +99,27 @@ class metrics_response(BaseModel):
     f1 : float
 
 
-# # 7. (GET) ANOVA-통계 검증
-# class anova_result(BaseModel):
-#     test_name : str
-#     groups: List[str]
-#     group_means : Dict[str , float]
-#     f_statistic: float
-#     p_value: float
-#     effect_size_eta_squared: float
-#     tukey : str
-# class anova_request(BaseModel):
-#     pass
-# class anova_response(BaseModel):
-#     tees_1 : anova_result
-#     test_2 : anova_result
+# 7. (GET) ANOVA-통계 검증
+class tukey_result(BaseModel): # 사후검정 한 쌍 비교 결과
+    comparison: str
+    mean_diff: float
+    p_adj: float
+    significant: bool
+    
+class anova_result(BaseModel):
+    test_name : str
+    groups: List[str]
+    group_means : Dict[str , float]
+    f_statistic: float
+    p_value: float
+    effect_size_eta_squared: float
+    is_significant: bool
+    post_hoc_tukey: Optional[List[tukey_result]] = None
+class anova_request(BaseModel):
+    pass
+class anova_response(BaseModel):
+    test_1_feature_group: anova_result
+    test_2_algorithm: anova_result
 
 
 # # 8. (GET) 반사실적 설명
