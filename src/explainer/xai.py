@@ -7,6 +7,8 @@
 # 거절 사유 top5 변수명, 현재 값, shap 기여도, 자연어 설명 반환
 # summary plot 이미지, dependence plot 이미지, waterfall plot 이미지
 
+# ※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다.
+
 from typing import Optional
 from pathlib import Path
 
@@ -29,12 +31,18 @@ class ModelExplainer:
                  predict_fn=None, # 모델의 예측 메소드(ex) model.predict)
                  class_index=1, # 어느 클래스(부도x: 0/ 부도o: 1)에 대한 설명을 볼지 정하는 값
                  global_sample_size: Optional[int] = None, # Summary/Dependence용 표본 크기 (None이면 Tree 2000, Kernel 200)
-                 random_state: int = 42
+                 random_state: int = 42,
+                 exclude_from_reasons=("is_thin_filer",), # 기여 변수 top에서 "is_thin_filer" 변수는 제외
+                 raw_means: Optional[dict] = None, # 전처리전 원본 평균을 따로 받기
+                 raw_scales: Optional[dict] = None        # 변수별 원본 단위 표준편차 (scaler.scale_)
     ):
         self.columns = list(background.columns) # 학습에 사용된 데이터 컬럼
-        self.feature_means = background.mean() # 자연어 설명의 기준값 (학습 데이터의 변수별 평균)
         self.class_index = class_index # 어떤 결과(부도 o/x)에 대해 설명할지
-        self.random_state = random_state ##
+        self.random_state = random_state 
+        # 자연어 설명의 기준값: 원본 단위 평균이 주어지면 그것을, 없으면 background 평균(표준화 값)
+        self.feature_means = pd.Series(raw_means) if raw_means is not None else background.mean()
+        self.raw_scales = raw_scales or {}                 # 표준화 되돌리기용 표준편차
+        self.exclude_from_reasons = tuple(exclude_from_reasons)  # startswith()는 tuple을 받음
 
 
         # KernelExplainer는 확률을 설명해야 의미가 있음
@@ -129,33 +137,63 @@ class ModelExplainer:
     # ------------------------------------------------------------------
     # 1. 개별 고객 설명 (API /explain용)
     # ------------------------------------------------------------------
-    def explain(self, user_input, top_k: int =5):
+    def explain(self, user_input, top_k: int = 5, raw_values: Optional[dict] = None,
+            only_positive: bool = True):  
         x = self._to_frame(user_input)
         sv, base_value = self._shap_for(x)
         values = sv[0] # 입력: 한 행 -> 각 변수의 shap값: 첫 번째 행
 
 
-        # shap 기여도 절댓값 큰 순서로 top_k개
-        top = sorted(zip(self.columns, values), key = lambda t: abs(t[1]), reverse = True)[:top_k]
+        # 거절 사유 후보: 제외 변수(is_thin_filer 등) 빼고, only_positive면 SHAP > 0만
+        candidates = [
+            (name, v) for name, v in zip(self.columns, values)
+            if not name.startswith(self.exclude_from_reasons)
+            and (v > 0 or not only_positive)
+        ]
+        # 부도 확률을 많이 높인 순서로 top_k개
+        # (only_positive=False일 때는 영향력 크기 기준이 되도록 절댓값으로 정렬)
+        sort_key = (lambda t: t[1]) if only_positive else (lambda t: abs(t[1]))
+        top = sorted(candidates, key=sort_key, reverse=True)[:top_k]
 
+        raw_values = raw_values or {}   # None이 들어와도 'in' 검사가 되도록
         reasons = []
 
         for name, contrib in top:
-            current = float(x.iloc[0][name])
-            mean = float(self.feature_means[name])
+            scaled = float(x.iloc[0][name])   # 전처리 후 값 (표준화됨)
 
-            if current > mean:
-                direction = "높습니다"
-            elif current < mean:
-                direction = "낮습니다"
+            # 모델이 실제로 사용한 값을 원본 단위로 복원 (미입력이면 대체값)
+            if name in self.raw_scales:
+                used = scaled * self.raw_scales[name] + float(self.feature_means[name])
             else:
-                direction = "같습니다"
+                used = scaled
+
+            # 평균: 원본 평균이 있으면 그것, 없으면 전역 데이터(표준화) 평균
+            if name in self.feature_means.index:
+                mean = float(self.feature_means[name])
+            else:
+                mean = float(self._global_X[name].mean())
+
+            # 키는 있는데 값이 None → 사용자가 입력하지 않은 항목
+            if name in raw_values and raw_values[name] is None:
+                current = None
+                desc = f"{name}: 미입력 (대체값 {used:,.2f}(으)로 계산됨) (기여도: {contrib:+.3f})"
+            else:
+                raw = raw_values.get(name)
+                current = float(raw) if raw is not None else used   # 원본 입력 우선, 없으면 복원값
+
+                if current > mean:
+                    direction = "높습니다"
+                elif current < mean:
+                    direction = "낮습니다"
+                else:
+                    direction = "같습니다"
+                desc = f"{name}이(가) {current:,.2f}(으)로, 평균({mean:,.2f}) 대비 {direction} (기여도: {contrib:+.3f})"
 
             reasons.append({
                 "feature": name,
                 "value": current,
                 "shap_val": float(contrib),
-                "description": f"{name}이(가) {current:,.2f}(으)로, 평균({mean:,.2f}) 대비 {direction} (기여도: {contrib:+.3f})"
+                "description": desc          # 위에서 만든 문장 사용
             })
         return {
             "base_value": base_value,
