@@ -1,0 +1,224 @@
+{
+  "test_1_feature_group": {
+    "test_name": "피처 그룹별 AUC 비교 (One-way ANOVA)",
+    "groups": [
+      "전통모델",
+      "대안모델",
+      "통합모델"
+    ],
+    "group_means": {
+      "전통모델": 0.8171,
+      "대안모델": 0.8277,
+      "통합모델": 0.8818
+    },
+    "group_stds": {
+      "전통모델": 0.0045,
+      "대안모델": 0.0065,
+      "통합모델": 0.0049
+    },
+    "n_per_group": {
+      "전통모델": 15,
+      "대안모델": 15,
+      "통합모델": 15
+    },
+    "f_statistic": 629.7409,
+    "p_value": 4.842e-32,
+    "effect_size_eta_squared": 0.9677,
+    "effect_size_interpretation": "Large",
+    "alpha": 0.05,
+    "is_significant": true,
+    "post_hoc_tukey": [
+      {
+        "comparison": "전통모델 vs 대안모델",
+        "mean_diff": -0.0107,
+        "p_adj": 7.299e-06,
+        "ci_lower": -0.0154,
+        "ci_upper": -0.0059,
+        "significant": true
+      },
+      {
+        "comparison": "전통모델 vs 통합모델",
+        "mean_diff": -0.0648,
+        "p_adj": 0.0,
+        "ci_lower": -0.0695,
+        "ci_upper": -0.06,
+        "significant": true
+      },
+      {
+        "comparison": "대안모델 vs 통합모델",
+        "mean_diff": -0.0541,
+        "p_adj": 0.0,
+        "ci_lower": -0.0588,
+        "ci_upper": -0.0493,
+        "significant": true
+      }
+    ],
+    "assumptions": {
+      "shapiro_p_values": {
+        "전통모델": 0.35132,
+        "대안모델": 0.243685,
+        "통합모델": 0.360076
+      },
+      "levene_p_value": 0.441155,
+      "note": "p >= 0.05 이면 정규성/등분산성 가정을 기각하지 않음"
+    },
+    "interpretation": "그룹 간 평균 차이가 통계적으로 유의합니다 (F=629.7409, p=4.842e-32). η²=0.9677로 효과 크기는 Large이며, 평균이 가장 높은 그룹은 통합모델(0.8818)입니다. Tukey HSD 결과 유의한 차이: 전통모델 vs 대안모델, 전통모델 vs 통합모델, 대안모델 vs 통합모델.",
+    "fold_scores": {
+      "전통모델": [
+        0.8145,
+        0.8201,
+        0.8212,
+        0.8173,
+        0.8112,
+        0.8134,
+        0.8151,
+        0.8241,
+        0.8161,
+        0.8185,
+        0.8195,
+        0.8192,
+        0.8201,
+        0.8198,
+        0.8062
+      ],
+      "대안모델": [
+        0.8304,
+        0.8347,
+        0.8294,
+        0.8163,
+        0.8322,
+        0.8294,
+        0.8372,
+        0.8316,
+        0.8247,
+        0.8171,
+        0.8277,
+        0.8309,
+        0.8336,
+        0.8196,
+        0.8214
+      ],
+      "통합모델": [
+        0.8808,
+        0.8866,
+        0.8867,
+        0.8727,
+        0.8829,
+        0.8809,
+        0.8859,
+        0.8871,
+        0.876,
+        0.8771,
+        0.8827,
+        0.8852,
+        0.8886,
+        0.8768,
+        0.8776
+      ]
+    }
+  },
+  "test_2_algorithm": {
+    "test_name": "알고리즘별 AUC 비교 (One-way ANOVA)",
+    "groups": [
+      "LogisticRegression",
+      "XGBoost",
+      "LightGBM"
+    ],
+    "group_means": {
+      "LogisticRegression": 0.8802,
+      "XGBoost": 0.8832,
+      "LightGBM": 0.8818
+    },
+    "group_stds": {
+      "LogisticRegression": 0.005,
+      "XGBoost": 0.0048,
+      "LightGBM": 0.0049
+    },
+    "n_per_group": {
+      "LogisticRegression": 15,
+      "XGBoost": 15,
+      "LightGBM": 15
+    },
+    "f_statistic": 1.3867,
+    "p_value": 0.2611,
+    "effect_size_eta_squared": 0.0619,
+    "effect_size_interpretation": "Medium",
+    "alpha": 0.05,
+    "is_significant": false,
+    "post_hoc_tukey": null,
+    "assumptions": {
+      "shapiro_p_values": {
+        "LogisticRegression": 0.838614,
+        "XGBoost": 0.641972,
+        "LightGBM": 0.360076
+      },
+      "levene_p_value": 0.915181,
+      "note": "p >= 0.05 이면 정규성/등분산성 가정을 기각하지 않음"
+    },
+    "interpretation": "그룹 간 평균 차이가 통계적으로 유의하지 않습니다 (F=1.3867, p=0.2611, α=0.05). η²=0.0619 (Medium).",
+    "fold_scores": {
+      "LogisticRegression": [
+        0.8823,
+        0.8868,
+        0.8828,
+        0.8705,
+        0.8783,
+        0.8771,
+        0.8859,
+        0.885,
+        0.8738,
+        0.8795,
+        0.8816,
+        0.8774,
+        0.8878,
+        0.8766,
+        0.8781
+      ],
+      "XGBoost": [
+        0.8841,
+        0.8875,
+        0.8876,
+        0.8746,
+        0.8838,
+        0.8823,
+        0.8896,
+        0.8872,
+        0.8779,
+        0.8789,
+        0.8831,
+        0.8831,
+        0.8904,
+        0.876,
+        0.8819
+      ],
+      "LightGBM": [
+        0.8808,
+        0.8866,
+        0.8867,
+        0.8727,
+        0.8829,
+        0.8809,
+        0.8859,
+        0.8871,
+        0.876,
+        0.8771,
+        0.8827,
+        0.8852,
+        0.8886,
+        0.8768,
+        0.8776
+      ]
+    }
+  },
+  "meta": {
+    "metric": "ROC-AUC",
+    "cv": "RepeatedStratifiedKFold(n_splits=5, n_repeats=3)",
+    "alpha": 0.05,
+    "n_samples": 104999,
+    "feature_group_model": "LightGBM",
+    "n_traditional_features": 16,
+    "n_alternative_features": 5,
+    "note": "fold 간 학습 데이터가 겹쳐 관측치가 완전히 독립은 아니므로 p-value 해석 시 유의",
+    "requirement_any_significant": true
+  }
+}
