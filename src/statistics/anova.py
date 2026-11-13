@@ -8,7 +8,7 @@ One-way ANOVA 기반 모델 성능 비교 모듈.
   검증 1 (test_1_feature_group): 피처 그룹별 모델(전통 Only / 대안 Only / 통합) AUC 비교
                                 → 대안 데이터 효용성 검증
   검증 2 (test_2_algorithm)    : 알고리즘별(LR / XGB / LGBM) AUC 비교
-                                → 최적 알고리즘 선정 근거
+                                → 알고리즘 간 성능 차이 확인 (유의할 때만 선정 근거로 사용)
 
 각 검증 결과에는 F-통계량, p-value, η²(효과 크기)가 포함되며,
 p < alpha 인 경우 사후 검정(Tukey HSD) 결과가 포함된다.
@@ -98,6 +98,12 @@ ALGORITHM_DISPLAY_NAMES = {
 # 검증 1 의 세 그룹 이름 (튜플이라 수정 불가)
 FEATURE_GROUP_NAMES = ("전통모델", "대안모델", "통합모델")
 
+# 반복 CV 관측치의 비독립성 한계 (meta·각 검증 결과·리포트에 공통 사용)
+CV_DEPENDENCE_NOTE = (
+    "Repeated K-Fold 의 fold 들은 학습 데이터를 공유해 서로 독립이 아니므로, "
+    "집단 내 분산이 작게 추정되어 F·η² 가 커지고 p-value 가 실제보다 작게(유의하게) 나올 수 있음. "
+    "유의성과 효과 크기는 방향 확인용으로 해석할 것"
+)
 
 # =========================================================================== #
 # 설정 (하드코딩 금지 → 환경 변수로 덮어쓰기)
@@ -577,9 +583,24 @@ def run_all_anova(
             "n_traditional_features": len(traditional_features),
             "n_alternative_features": len(alternative_features),
             # 통계적 한계 명시: fold 끼리 학습 데이터가 겹쳐 p값이 다소 낙관적일 수 있음
-            "note": "fold 간 학습 데이터가 겹쳐 관측치가 완전히 독립은 아니므로 p-value 해석 시 유의",
+            "note": CV_DEPENDENCE_NOTE,
         },
     }
+
+    # 각 검증 결과에도 한계를 붙여 대시보드에서 바로 보이게 함
+    for key in ("test_1_feature_group", "test_2_algorithm"):
+        results[key]["limitation"] = CV_DEPENDENCE_NOTE
+
+    # 검증 2: 유의하지 않으면 "ANOVA 로 알고리즘을 골랐다"고 주장하지 않고 실제 선정 근거를 기록
+    t2 = results["test_2_algorithm"]
+    if t2["is_significant"]:
+        t2["selection_basis"] = "알고리즘 간 AUC 차이가 유의하여 ANOVA·Tukey HSD 결과를 선정 근거로 사용"
+    else:
+        t2["selection_basis"] = (
+            f"알고리즘 간 AUC 차이가 통계적으로 유의하지 않음(p={t2['p_value']}). "
+            f"따라서 ANOVA 는 선정 근거가 아니며, 최종 모델({best_name or '미지정'})은 "
+            "Validation AUC 기준으로 선정함"
+        )
 
     # 제약사항: "최소 1개 이상 검증에서 p < 0.05"
     any_sig = any(results[k]["is_significant"] for k in ("test_1_feature_group", "test_2_algorithm"))
@@ -667,7 +688,7 @@ def main() -> None:
 
     for key in ("test_1_feature_group", "test_2_algorithm"):
         print(f"\n[{key}] {results[key]['interpretation']}")   # 터미널에 해석 문장 출력
-
+    print(f"\n[선정 근거] {results['test_2_algorithm']['selection_basis']}")
 
 # python -m src.statistics.anova 로 "직접 실행했을 때만" main() 을 호출한다.
 # API 처럼 다른 파일에서 import 할 때는 실행되지 않는다.

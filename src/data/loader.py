@@ -37,8 +37,7 @@ def load_gmsc(path: Optional[Union[str, Path]] = None) -> pd.DataFrame:
         "missing_ratio(%)": (df.isna().mean() * 100).round(2),
     })
     msg = f"[loader] {path.name} 로드 완료 | shape={df.shape}\n{summary.to_string()}"
-    print(msg)
-    logger.debug(msg)
+    logger.info(msg)
     return df
 
 

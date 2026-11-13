@@ -115,7 +115,8 @@
         0.8768,
         0.8776
       ]
-    }
+    },
+    "limitation": "Repeated K-Fold 의 fold 들은 학습 데이터를 공유해 서로 독립이 아니므로, 집단 내 분산이 작게 추정되어 F·η² 가 커지고 p-value 가 실제보다 작게(유의하게) 나올 수 있음. 유의성과 효과 크기는 방향 확인용으로 해석할 것"
   },
   "test_2_algorithm": {
     "test_name": "알고리즘별 AUC 비교 (One-way ANOVA)",
@@ -208,7 +209,9 @@
         0.8768,
         0.8776
       ]
-    }
+    },
+    "limitation": "Repeated K-Fold 의 fold 들은 학습 데이터를 공유해 서로 독립이 아니므로, 집단 내 분산이 작게 추정되어 F·η² 가 커지고 p-value 가 실제보다 작게(유의하게) 나올 수 있음. 유의성과 효과 크기는 방향 확인용으로 해석할 것",
+    "selection_basis": "알고리즘 간 AUC 차이가 통계적으로 유의하지 않음(p=0.2611). 따라서 ANOVA 는 선정 근거가 아니며, 최종 모델(LightGBM)은 Validation AUC 기준으로 선정함"
   },
   "meta": {
     "metric": "ROC-AUC",
@@ -218,7 +221,7 @@
     "feature_group_model": "LightGBM",
     "n_traditional_features": 16,
     "n_alternative_features": 5,
-    "note": "fold 간 학습 데이터가 겹쳐 관측치가 완전히 독립은 아니므로 p-value 해석 시 유의",
+    "note": "Repeated K-Fold 의 fold 들은 학습 데이터를 공유해 서로 독립이 아니므로, 집단 내 분산이 작게 추정되어 F·η² 가 커지고 p-value 가 실제보다 작게(유의하게) 나올 수 있음. 유의성과 효과 크기는 방향 확인용으로 해석할 것",
     "requirement_any_significant": true
   }
 }
