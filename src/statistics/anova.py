@@ -690,6 +690,7 @@ def main() -> None:
         print(f"\n[{key}] {results[key]['interpretation']}")   # 터미널에 해석 문장 출력
     print(f"\n[선정 근거] {results['test_2_algorithm']['selection_basis']}")
 
+
 # python -m src.statistics.anova 로 "직접 실행했을 때만" main() 을 호출한다.
 # API 처럼 다른 파일에서 import 할 때는 실행되지 않는다.
 if __name__ == "__main__":

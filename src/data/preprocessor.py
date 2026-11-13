@@ -33,6 +33,8 @@ XAI 기반 대안신용평가 시스템 - 전처리 및 데이터 분할 모듈
   - SHAP에서 쓸 수 있도록 변환 후 피처 이름을 보존한다.
 
 요구 사항: scikit-learn >= 1.2 (sparse_output, set_output 사용)
+
+실행: python -m src.data.preprocessor
 """
 
 from __future__ import annotations

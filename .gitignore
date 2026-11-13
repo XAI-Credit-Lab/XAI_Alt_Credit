@@ -15,3 +15,5 @@ data/processed/결과_구버전.csv
 
 # 환경 변수 (비밀값). 템플릿인 .env.example 은 올림
 .env
+
+.venv/
