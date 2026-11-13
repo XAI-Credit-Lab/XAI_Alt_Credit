@@ -1,0 +1,182 @@
+{
+  "non_miti": {
+    "di_ratio": 0.7772266736431014,
+    "equalized_odds_tpr_diff": 0.18165573036915983,
+    "equalized_odds_fpr_diff": 0.10854639146068688,
+    "age_di": {
+      "~34": 0.7734874549994444,
+      "55+": 1.2101406812029771
+    },
+    "age_equalized_odds_tpr_diff": 0.26019478152179565,
+    "age_equalized_odds_fpr_diff": 0.10785046728971963,
+    "approval_rate": 0.7057333333333333,
+    "approved_default_rate": 0.015555135713835884,
+    "warnings": [
+      {
+        "attribute": "gender",
+        "group": "여성/남성",
+        "di": 0.7772266736431014,
+        "status": "WARNING"
+      },
+      {
+        "attribute": "age_group",
+        "group": "~34/35~54",
+        "di": 0.7734874549994444,
+        "status": "WARNING"
+      },
+      {
+        "attribute": "age_group",
+        "group": "55+/35~54",
+        "di": 1.2101406812029771,
+        "status": "OK"
+      }
+    ],
+    "overall_status": "WARNING",
+    "gender_table": [
+      {
+        "group": "여성",
+        "n": 11465,
+        "n_default": 772,
+        "approval_rate": 0.6187527256868731,
+        "tpr": 0.6553820256242402,
+        "fpr": 0.11139896373056994
+      },
+      {
+        "group": "남성",
+        "n": 11035,
+        "n_default": 732,
+        "approval_rate": 0.7961033076574535,
+        "tpr": 0.8370377559934,
+        "fpr": 0.21994535519125682
+      }
+    ],
+    "age_table": [
+      {
+        "group": "~34",
+        "n": 2853,
+        "n_default": 321,
+        "approval_rate": 0.5131440588853838,
+        "tpr": 0.5639810426540285,
+        "fpr": 0.11214953271028037
+      },
+      {
+        "group": "55+",
+        "n": 9905,
+        "n_default": 350,
+        "approval_rate": 0.8028268551236749,
+        "tpr": 0.8241758241758241,
+        "fpr": 0.22
+      },
+      {
+        "group": "35~54",
+        "n": 9742,
+        "n_default": 833,
+        "approval_rate": 0.663416136316978,
+        "tpr": 0.7104052082164104,
+        "fpr": 0.1608643457382953
+      }
+    ]
+  },
+  "miti": {
+    "di_ratio": 0.9919561517412223,
+    "equalized_odds_tpr_diff": 0.004663130597492349,
+    "equalized_odds_fpr_diff": 0.01136781902092357,
+    "age_di": {
+      "~34": 0.9947764650097782,
+      "55+": 1.0070981567885569
+    },
+    "age_equalized_odds_tpr_diff": 0.03569890953100163,
+    "age_equalized_odds_fpr_diff": 0.04120160213618157,
+    "approval_rate": 0.7046666666666667,
+    "approved_default_rate": 0.015515610217596973,
+    "warnings": [
+      {
+        "attribute": "gender",
+        "group": "여성/남성",
+        "di": 0.9919561517412223,
+        "status": "OK"
+      },
+      {
+        "attribute": "age_group",
+        "group": "~34/35~54",
+        "di": 0.9947764650097782,
+        "status": "OK"
+      },
+      {
+        "attribute": "age_group",
+        "group": "55+/35~54",
+        "di": 1.0070981567885569,
+        "status": "OK"
+      }
+    ],
+    "overall_status": "OK",
+    "gender_table": [
+      {
+        "group": "여성",
+        "n": 11465,
+        "n_default": 772,
+        "approval_rate": 0.7018752725686873,
+        "tpr": 0.741139062938371,
+        "fpr": 0.15803108808290156
+      },
+      {
+        "group": "남성",
+        "n": 11035,
+        "n_default": 732,
+        "approval_rate": 0.7075668328047123,
+        "tpr": 0.7458021935358633,
+        "fpr": 0.16939890710382513
+      }
+    ],
+    "age_table": [
+      {
+        "group": "~34",
+        "n": 2853,
+        "n_default": 321,
+        "approval_rate": 0.6992639327024185,
+        "tpr": 0.764218009478673,
+        "fpr": 0.18691588785046728
+      },
+      {
+        "group": "55+",
+        "n": 9905,
+        "n_default": 350,
+        "approval_rate": 0.7079252902574458,
+        "tpr": 0.7285190999476714,
+        "fpr": 0.1457142857142857
+      },
+      {
+        "group": "35~54",
+        "n": 9742,
+        "n_default": 833,
+        "approval_rate": 0.702935742147403,
+        "tpr": 0.7535076888539679,
+        "fpr": 0.16206482593037214
+      }
+    ]
+  },
+  "info": {
+    "model": "lightgbm",
+    "model_file": "lightgbm_v1.0.pkl",
+    "model_version": "1.0",
+    "trained_at": "2026-11-13T19:02:05",
+    "approval_rule": "부도확률 <= approval_cutoff -> 승인",
+    "approval_cutoff": 0.06177985482114255,
+    "target_approval_rate": 0.7,
+    "mitigation": "Threshold Adjustment",
+    "mitigation_by": [
+      "gender",
+      "age_group"
+    ],
+    "group_cutoffs": {
+      "1|35~54": 0.09534364972397398,
+      "0|55+": 0.02591054701979891,
+      "1|55+": 0.05637797049037809,
+      "0|35~54": 0.04898211665984701,
+      "1|~34": 0.1673914985711931,
+      "0|~34": 0.07623476605748022
+    },
+    "test_auc": 0.8822067615209381,
+    "n_test": 22500
+  }
+}
