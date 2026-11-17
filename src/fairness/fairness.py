@@ -254,7 +254,7 @@ def fairness_summary(y_true, approved, sens: pd.DataFrame, tag: str = "") -> dic
 def _latest_meta(model_dir: Path) -> Path:
     files = sorted(model_dir.glob("model_meta_v*.json"))
     if not files:
-        raise FileNotFoundError(f"model_meta_v*.json 이 없습니다: {model_dir}  (python -m src.data.model 먼저 실행)")
+        raise FileNotFoundError(f"model_meta_v*.json 이 없습니다: {model_dir}  (python -m src.models.model 먼저 실행)")
     return files[-1]
 
 
@@ -287,6 +287,13 @@ def run_fairness(model_dir=MODEL_DIR, data_dir=DATA_DIR, by=DEFAULT_MITIGATION_B
     model = joblib.load(model_dir / best["file"])
     X_val, y_val, s_val = _read_split(data_dir, "val")
     X_te, y_te, s_te = _read_split(data_dir, "test")
+    # 학습 때 피처 순서로 맞춤 (sensitive 전용 컬럼은 X에 없음). 없는 피처가 있으면 즉시 에러
+    feats = meta.get("feature_names")
+    if feats:
+        missing = [c for c in feats if c not in X_val.columns]
+        if missing:
+            raise KeyError(f"X_val에 모델 피처가 없습니다: {missing}")
+        X_val, X_te = X_val[feats], X_te[feats]
     p_val = model.predict_proba(X_val)[:, 1]
     p_te = model.predict_proba(X_te)[:, 1]
 
@@ -320,6 +327,51 @@ def model_fairness():
     """
     r = _cached_run()
     return r["non_miti"], r["miti"]
+
+
+def _json_safe(o):
+    """NaN/inf -> None, numpy 타입 -> 파이썬 타입 (FastAPI JSON 응답은 NaN을 허용하지 않음)"""
+    if isinstance(o, dict):
+        return {str(k): _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    if isinstance(o, (np.floating, float)):
+        return _safe(o)
+    if isinstance(o, np.integer):
+        return int(o)
+    return o
+
+
+def model_fairness_detail() -> dict:
+    """
+    /fairness/detail 용: 대시보드가 HTTP로만 받아 갈 수 있도록 상세 결과 전체를 반환.
+    (연령 DI, 속성별 판정, 집단표, 완화 기준값, 판정 기준값)
+    """
+    r = _cached_run()
+    return _json_safe({
+        "thresholds": {"di_lower": DI_LOWER, "di_upper": DI_UPPER, "eo_threshold": EO_THRESHOLD,
+                       "min_defaults_per_group": MIN_DEFAULTS_PER_GROUP},
+        "info": r["info"], "non_miti": r["non_miti"], "miti": r["miti"],
+    })
+
+
+def comparison_table(result: dict | None = None) -> pd.DataFrame:
+    """보고서용 '완화 전/후 공정성 지표 비교표' (요구사항: 리포트에 비교 표 포함)"""
+    r = result or _cached_run()
+    b, a = r["non_miti"], r["miti"]
+    rows = [("성별 DI (여/남)", "di_ratio", f"{DI_LOWER}~{DI_UPPER}"),
+            ("성별 ΔTPR", "equalized_odds_tpr_diff", f"<= {EO_THRESHOLD}"),
+            ("성별 ΔFPR", "equalized_odds_fpr_diff", f"<= {EO_THRESHOLD}"),
+            ("연령 ΔTPR", "age_equalized_odds_tpr_diff", f"<= {EO_THRESHOLD}"),
+            ("연령 ΔFPR", "age_equalized_odds_fpr_diff", f"<= {EO_THRESHOLD}")]
+    out = [{"지표": n, "완화 전": b[k], "완화 후": a[k], "기준": std} for n, k, std in rows]
+    for grp in AGE_LABELS:
+        if grp != AGE_REFERENCE:
+            out.append({"지표": f"연령 DI {grp}/{AGE_REFERENCE}", "완화 전": b["age_di"][grp],
+                        "완화 후": a["age_di"][grp], "기준": f"{DI_LOWER}~{DI_UPPER}"})
+    out.append({"지표": "전체 승인율", "완화 전": b["approval_rate"], "완화 후": a["approval_rate"], "기준": "-"})
+    out.append({"지표": "승인자 부도율", "완화 전": b["approved_default_rate"], "완화 후": a["approved_default_rate"], "기준": "-"})
+    return pd.DataFrame(out)
 
 
 def write_report(path=REPORT_PATH, **kw) -> Path:
@@ -360,4 +412,6 @@ if __name__ == "__main__":
     _print(res)
     out = write_report()
     print(f"\n리포트 저장: {out}")
-
+    csv_path = out.with_name("fairness_comparison.csv")
+    comparison_table(res).to_csv(csv_path, index=False, encoding="utf-8-sig")
+    print(f"비교표 저장 (보고서용): {csv_path}")
