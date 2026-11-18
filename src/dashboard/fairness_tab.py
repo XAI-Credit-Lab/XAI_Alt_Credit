@@ -2,12 +2,11 @@
 src/dashboard/fairness_tab.py
 Streamlit 대시보드 - 공정성 탭
 
-데이터 출처 (우선순위)
-  1) FastAPI  GET {API_URL}/fairness/mitigation   -> 성별 DI, ΔTPR, ΔFPR (완화 전/후)   ※ 헤드라인
-  2) reports/fairness_report.json                 -> 연령 DI, 속성별 판정, 집단표, 기준값  ※ 상세
-     (python -m src.fairness.fairness 로 생성. API가 꺼져 있으면 헤드라인도 여기서 읽음)
-  - 화면에 보이는 모든 숫자는 위 두 곳에서만 오며, 이 파일에는 값이 없다.
-  - 판정 기준(DI 0.8~1.25, EO 0.10)은 src/fairness/fairness.py 의 상수를 그대로 가져온다.
+MSA 구조: 이 파일은 모델 파일(.pkl)이나 src/fairness 모듈, 리포트 파일을 읽지 않는다.
+모든 값은 FastAPI 서버와 HTTP 통신으로만 가져온다.
+  GET {API_URL}/fairness/mitigation : 성별 DI, ΔTPR, ΔFPR (완화 전/후)          ← 요구사항 엔드포인트
+  GET {API_URL}/fairness/detail     : 연령 DI, 속성별 판정, 집단표, 기준값        ← 상세 (추가 엔드포인트)
+화면의 모든 숫자는 위 응답에서만 오며, 이 파일에는 데이터 값이 없다.
 
 사용
   - 단독 실행 : streamlit run src/dashboard/fairness_tab.py
@@ -16,24 +15,23 @@ Streamlit 대시보드 - 공정성 탭
 """
 from __future__ import annotations
 
-import json
 import os
-import sys
-from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+API_URL = os.environ.get("API_URL", "http://localhost:8000").rstrip("/")
 
-try:  # 판정 기준은 한 곳(fairness.py)에서만 관리
-    from src.fairness.fairness import DI_LOWER, DI_UPPER, EO_THRESHOLD, MIN_DEFAULTS_PER_GROUP
-except Exception:  # fairness.py 없이 대시보드만 배포한 경우의 대비값 (fairness.py와 같아야 함)
-    DI_LOWER, DI_UPPER, EO_THRESHOLD, MIN_DEFAULTS_PER_GROUP = 0.8, 1.25, 0.10, 100
+# 판정 기준: 프로젝트 요구사항 값. 서버가 /fairness/detail 로 기준값을 보내 주면 그 값을 우선 사용
+DEFAULT_THRESHOLDS = {"di_lower": 0.8, "di_upper": 1.25, "eo_threshold": 0.10, "min_defaults_per_group": 100}
+AGE_REF = "35~54"
+
+# 검증된 범주 색 (파랑=완화 전, 주황=완화 후). 상태색(빨강/초록)은 판정 전용이라 쓰지 않음
+C_BEFORE, C_AFTER = "#2a78d6", "#eb6834"
+GRID = "rgba(128,128,128,0.25)"
+
 
 def _stretch_kwargs() -> dict:
     """Streamlit 1.50+ 는 width="stretch", 그보다 오래된 버전은 use_container_width=True"""
@@ -45,50 +43,33 @@ def _stretch_kwargs() -> dict:
 
 
 STRETCH = _stretch_kwargs()
-API_URL = os.environ.get("API_URL", "http://localhost:8000").rstrip("/")
-REPORT_PATH = Path(os.environ.get("FAIRNESS_REPORT", ROOT / "reports" / "fairness_report.json"))
-
-# 검증된 범주 색 (파랑=완화 전, 주황=완화 후). 상태색(빨강/초록)은 판정 전용이라 쓰지 않음
-C_BEFORE, C_AFTER = "#2a78d6", "#eb6834"
-GRID = "rgba(128,128,128,0.25)"
 
 
 # ----------------------------------------------------------------------
-# 데이터 로드
+# 데이터 로드 (HTTP only)
 # ----------------------------------------------------------------------
 @st.cache_data(ttl=30, show_spinner=False)
-def load_api(url: str):
+def fetch(url: str, path: str):
+    """API GET. 실패하면 None (예외를 화면에 던지지 않음)"""
     try:
-        r = requests.get(f"{url}/fairness/mitigation", timeout=3)
+        r = requests.get(f"{url}{path}", timeout=5)
         r.raise_for_status()
         return r.json()
     except Exception:
         return None
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def load_report(path: str):
-    p = Path(path)
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def _status(v):
+def _status(v, th):
     if v is None:
         return "UNKNOWN"
-    return "WARNING" if (v < DI_LOWER or v > DI_UPPER) else "OK"
+    return "WARNING" if (v < th["di_lower"] or v > th["di_upper"]) else "OK"
 
 
-def _badge(label: str, v, kind: str = "di") -> str:
-    """색만으로 구분하지 않도록 아이콘 + 글자를 함께 표기"""
+def _badge(label: str, v, th, kind: str = "di") -> str:
+    """색만으로 구분하지 않도록 아이콘 + 글자를 함께 표기. '~'는 마크다운 취소선이라 이스케이프"""
     if v is None:
         return f"❔ {label}: 계산 불가"
-    bad = _status(v) == "WARNING" if kind == "di" else v > EO_THRESHOLD
-    # '~' 두 개가 마크다운 취소선이 되므로 이스케이프
+    bad = _status(v, th) == "WARNING" if kind == "di" else v > th["eo_threshold"]
     return f"{'⚠️ 경고' if bad else '✅ 정상'} · {label.replace('~', chr(92) + '~')} {v:.3f}"
 
 
@@ -118,21 +99,21 @@ def _bars(fig, x, before, after, inside: bool = False, fmt: str = "%{y:.3f}"):
     return fig
 
 
-def di_chart(before: dict, after: dict):
-    labels = ["성별 (여성/남성)"] + [f"연령 {k}/35~54" for k in before["age_di"]]
+def di_chart(before: dict, after: dict, th: dict):
+    labels = ["성별 (여성/남성)"] + [f"연령 {k}/{AGE_REF}" for k in before["age_di"]]
     b = [before["di_ratio"]] + list(before["age_di"].values())
     a = [after["di_ratio"]] + list(after["age_di"].values())
     fig = _bars(go.Figure(), labels, b, a, inside=True)
-    for y, txt in ((DI_LOWER, f"하한 {DI_LOWER}"), (DI_UPPER, f"상한 {DI_UPPER}")):
+    for y, txt in ((th["di_lower"], f"하한 {th['di_lower']}"), (th["di_upper"], f"상한 {th['di_upper']}")):
         fig.add_hline(y=y, line=dict(dash="dash", width=1.5, color="gray"), annotation_text=txt,
                       annotation_position="top left", annotation_font_size=11)
-    top = max([v for v in b + a if v is not None] + [DI_UPPER]) * 1.15
+    top = max([v for v in b + a if v is not None] + [th["di_upper"]]) * 1.15
     _layout(fig, "Disparate Impact Ratio (1.0에 가까울수록 균등)", "DI")
     fig.update_yaxes(range=[0, top])
     return fig
 
 
-def eo_chart(before: dict, after: dict, with_age: bool):
+def eo_chart(before: dict, after: dict, with_age: bool, th: dict):
     labels, b, a = ["성별 ΔTPR", "성별 ΔFPR"], [before["equalized_odds_tpr_diff"], before["equalized_odds_fpr_diff"]], \
         [after["equalized_odds_tpr_diff"], after["equalized_odds_fpr_diff"]]
     if with_age:
@@ -140,10 +121,31 @@ def eo_chart(before: dict, after: dict, with_age: bool):
         b += [before["age_equalized_odds_tpr_diff"], before["age_equalized_odds_fpr_diff"]]
         a += [after["age_equalized_odds_tpr_diff"], after["age_equalized_odds_fpr_diff"]]
     fig = _bars(go.Figure(), labels, b, a)
-    fig.add_hline(y=EO_THRESHOLD, line=dict(dash="dash", width=1.5, color="gray"),
-                  annotation_text=f"기준 {EO_THRESHOLD}", annotation_position="top left", annotation_font_size=11)
+    fig.add_hline(y=th["eo_threshold"], line=dict(dash="dash", width=1.5, color="gray"),
+                  annotation_text=f"기준 {th['eo_threshold']}", annotation_position="top left", annotation_font_size=11)
     _layout(fig, "Equalized Odds 차이 (0에 가까울수록 균등)", "집단 간 차이")
-    fig.update_yaxes(range=[0, max([v for v in b + a if v is not None] + [EO_THRESHOLD]) * 1.2])
+    fig.update_yaxes(range=[0, max([v for v in b + a if v is not None] + [th["eo_threshold"]]) * 1.2])
+    return fig
+
+
+def approval_chart(before: dict, after: dict, target: float | None):
+    """집단별 승인율 막대 차트 (요구사항: 공정성 탭 필수 구성요소)"""
+    def rates(d):
+        out = {}
+        for r in d["gender_table"]:
+            out[f"성별 {r['group']}"] = r["approval_rate"]
+        for r in d["age_table"]:
+            out[f"연령 {r['group']}"] = r["approval_rate"]
+        return out
+    rb, ra = rates(before), rates(after)
+    labels = list(rb)
+    fig = _bars(go.Figure(), labels, [rb[k] for k in labels], [ra.get(k) for k in labels], fmt="%{y:.1%}")
+    if target is not None:
+        fig.add_hline(y=target, line=dict(dash="dash", width=1.5, color="gray"),
+                      annotation_text=f"전체 목표 승인율 {target:.0%}", annotation_position="top left",
+                      annotation_font_size=11)
+    _layout(fig, "집단별 승인율 (집단 간 막대 높이가 같을수록 균등)", "승인율")
+    fig.update_yaxes(range=[0, 1.05], tickformat=".0%")
     return fig
 
 
@@ -152,30 +154,28 @@ def eo_chart(before: dict, after: dict, with_age: bool):
 # ----------------------------------------------------------------------
 def render_fairness_tab() -> None:
     st.subheader("공정성 검증")
-    api, rep = load_api(API_URL), load_report(str(REPORT_PATH))
+    api = fetch(API_URL, "/fairness/mitigation")
+    det = fetch(API_URL, "/fairness/detail")
 
-    if api is None and rep is None:
-        st.error("공정성 결과를 불러올 수 없습니다.")
-        st.markdown(
-            f"- API({API_URL})가 꺼져 있고 `{REPORT_PATH.name}` 도 없습니다.\n"
-            "- 프로젝트 최상위 폴더에서 `python -m src.fairness.fairness` 를 실행하면 리포트가 만들어집니다.\n"
-            "- 이 명령은 `models/` 와 `data/processed/` (X·y·sensitive 의 val/test) 가 있어야 합니다."
-        )
+    if api is None and det is None:
+        st.error(f"공정성 결과를 불러올 수 없습니다. API 서버({API_URL})에 연결되지 않았습니다.")
+        st.markdown("- API 서버가 실행 중인지, `API_URL` 환경변수가 맞는지 확인하세요. (Docker: `http://api:8000`)\n"
+                    "- 서버 쪽에서 모델(`models/`)과 분할 데이터가 준비돼 있어야 `/fairness` 가 응답합니다.")
         return
 
-    # 헤드라인: API 우선, 없으면 리포트
-    before = (api or {}).get("before") or rep["non_miti"]
-    after = (api or {}).get("after") or rep["miti"]
-    st.caption(f"헤드라인 출처: {'API ' + API_URL if api else '리포트 파일 (API 연결 안 됨)'}"
-               f"  |  상세(연령·집단표): {'리포트 파일' if rep else '없음 — python -m src.fairness.fairness 실행'}")
+    th = {**DEFAULT_THRESHOLDS, **((det or {}).get("thresholds") or {})}
+    # 헤드라인은 요구사항 엔드포인트 우선, 없으면 detail 에서
+    before = (api or {}).get("before") or det["non_miti"]
+    after = (api or {}).get("after") or det["miti"]
+    st.caption(f"출처: API {API_URL}  |  상세(연령·집단표): "
+               f"{'/fairness/detail' if det else '없음 (/fairness/detail 미응답)'}")
 
-    # 상세는 리포트가 있을 때만. 헤드라인과 리포트가 다른 모델 결과면 알려 줌
-    if rep and api and abs(rep["non_miti"]["di_ratio"] - api["before"]["di_ratio"]) > 1e-6:
-        st.warning("리포트 파일의 값이 API 결과와 다릅니다. 모델을 다시 학습했다면 "
-                   "`python -m src.fairness.fairness` 로 리포트를 새로 만드세요. (상세 부분은 구버전일 수 있음)")
-        rep = None
-    if rep:
-        before, after = {**rep["non_miti"], **before}, {**rep["miti"], **after}
+    # /fairness/mitigation 과 /fairness/detail 이 서로 다른 모델 결과면 상세를 쓰지 않음
+    if det and api and abs(det["non_miti"]["di_ratio"] - api["before"]["di_ratio"]) > 1e-6:
+        st.warning("두 API 응답의 값이 서로 다릅니다 (서버 재시작 중이거나 모델 교체 직후일 수 있음). 상세는 표시하지 않습니다.")
+        det = None
+    if det:
+        before, after = {**det["non_miti"], **before}, {**det["miti"], **after}
 
     # --- 판정 (속성마다 따로) -----------------------------------------
     st.markdown("##### 속성별 판정")
@@ -183,11 +183,11 @@ def render_fairness_tab() -> None:
     for col, title, d in ((c1, "완화 전", before), (c2, "완화 후", after)):
         with col:
             st.markdown(f"**{title}**")
-            st.markdown(f"- {_badge('성별 DI', d['di_ratio'])}")
-            if rep:
+            st.markdown(f"- {_badge('성별 DI', d['di_ratio'], th)}")
+            if det:
                 for k, v in d["age_di"].items():
-                    st.markdown(f"- {_badge(f'연령 {k}/35~54 DI', v)}")
-    if rep and (before["overall_status"] == "WARNING"):
+                    st.markdown(f"- {_badge(f'연령 {k}/{AGE_REF} DI', v, th)}")
+    if det and before["overall_status"] == "WARNING":
         st.warning("완화 전 모델은 위반 속성이 있습니다. 성별이 정상이어도 연령이 위반이면 경고로 표시합니다.")
 
     # --- 핵심 수치 -----------------------------------------------------
@@ -198,17 +198,18 @@ def render_fairness_tab() -> None:
                    delta_color="off")
 
     # --- 차트 ---------------------------------------------------------
-    if rep:
-        st.plotly_chart(di_chart(before, after), **STRETCH)
-    st.plotly_chart(eo_chart(before, after, with_age=bool(rep)), **STRETCH)
+    if det:
+        st.plotly_chart(approval_chart(before, after, det["info"].get("target_approval_rate")), **STRETCH)
+        st.plotly_chart(di_chart(before, after, th), **STRETCH)
+    st.plotly_chart(eo_chart(before, after, with_age=bool(det), th=th), **STRETCH)
 
-    if not rep:
-        st.info("연령대 DI, 집단표, 완화 비용은 리포트 파일이 있어야 표시됩니다.")
+    if not det:
+        st.info("집단별 승인율, 연령대 DI, 집단표, 완화 비용은 /fairness/detail 응답이 있어야 표시됩니다.")
         return
 
     # --- 완화 비용 ----------------------------------------------------
     st.markdown("##### 완화의 비용")
-    info = rep["info"]
+    info = det["info"]
     m1, m2, m3 = st.columns(3)
     m1.metric("전체 승인율", f"{after['approval_rate']:.2%}", delta=f"{after['approval_rate'] - before['approval_rate']:+.2%}p",
               delta_color="off")
@@ -229,9 +230,9 @@ def render_fairness_tab() -> None:
         st.dataframe(t, hide_index=True, **STRETCH,
                      column_config={c: st.column_config.NumberColumn(format="%.4f") for c in
                                     ("승인율", "TPR (정상 중 승인)", "FPR (부도 중 승인)")})
-        small = t.loc[t["부도 건수"] < MIN_DEFAULTS_PER_GROUP, "집단"].tolist()
+        small = t.loc[t["부도 건수"] < th["min_defaults_per_group"], "집단"].tolist()
         if small:
-            st.caption(f"⚠️ 부도 {MIN_DEFAULTS_PER_GROUP}건 미만 집단: {small} — 차이 값이 불안정할 수 있음")
+            st.caption(f"⚠️ 부도 {th['min_defaults_per_group']}건 미만 집단: {small} — 차이 값이 불안정할 수 있음")
 
     # --- 설명 ---------------------------------------------------------
     with st.expander("완화 방법과 집단별 승인 기준값"):

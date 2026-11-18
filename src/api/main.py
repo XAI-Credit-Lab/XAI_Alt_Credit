@@ -17,7 +17,7 @@ import time
 from datetime import datetime
 
 from src.explainer.xai import ModelExplainer
-from src.fairness.fairness import model_fairness
+from src.fairness.fairness import model_fairness, model_fairness_detail
 
 MODEL_DIR = PROJECT_ROOT / "models"
 
@@ -213,6 +213,15 @@ def fairness_mitigation():
             "equalized_odds_fpr_diff" : miti["equalized_odds_fpr_diff"]
         }
     }
+
+#================================================================================================================================
+# 5-1. (GET) 공정성 상세 (대시보드용): 연령 DI, 속성별 판정, 집단표, 판정 기준값
+#      대시보드는 .pkl/파일을 직접 읽지 않고 HTTP로만 데이터를 받으므로 필요한 엔드포인트
+@router.get("/fairness/detail", response_model = schema.fairness_detail_response)
+def fairness_detail():
+    if art["fairness"] is None:
+        raise HTTPException(status_code=503, detail="공정성 지표를 계산하지 못했습니다.")
+    return model_fairness_detail()
 
 #================================================================================================================================
 # 6. (GET) 모델 정확도

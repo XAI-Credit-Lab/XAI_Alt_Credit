@@ -202,3 +202,26 @@ def test_cutoffs_come_from_validation_only(result):
     for k, c in info["group_cutoffs"].items():
         assert c == pytest.approx(np.quantile(p[keys == k], info["target_approval_rate"]))
 
+
+@needs_artifacts
+def test_detail_is_strict_json_serializable():
+    """/fairness/detail 은 NaN 이 있으면 FastAPI 가 500 을 낸다 -> NaN 없이 엄격한 JSON 이어야 함"""
+    d = F.model_fairness_detail()
+    json.dumps(d, allow_nan=False)
+    assert set(d) == {"thresholds", "info", "non_miti", "miti"}
+    assert d["thresholds"]["di_lower"] == F.DI_LOWER and d["thresholds"]["eo_threshold"] == F.EO_THRESHOLD
+
+
+def test_json_safe_converts_nan_and_numpy():
+    out = F._json_safe({"a": float("nan"), "b": np.float64(0.5), "c": [np.int64(3), float("inf")]})
+    assert out == {"a": None, "b": 0.5, "c": [3, None]}
+
+
+@needs_artifacts
+def test_comparison_table_for_report(result):
+    t = F.comparison_table(result)
+    assert list(t.columns) == ["지표", "완화 전", "완화 후", "기준"]
+    assert "성별 DI (여/남)" in t["지표"].tolist() and "전체 승인율" in t["지표"].tolist()
+    row = t.set_index("지표").loc["성별 DI (여/남)"]
+    assert row["완화 전"] == pytest.approx(result["non_miti"]["di_ratio"])
+    assert row["완화 후"] == pytest.approx(result["miti"]["di_ratio"])

@@ -3,7 +3,7 @@
 # ※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다
 
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 
 # 1. (GET) 상태, 사용된 머신러닝 모델, 접속 시간 응답
 class health_request(BaseModel):
@@ -85,6 +85,14 @@ class fairness_mitigation_request(BaseModel):
 class fairness_mitigation_response(BaseModel):
     before : fairness_response # 위의 공정성 검증 결과(di_raio, tpr, fpr)에서
     after : fairness_response # mitigation 여부만 바꿔서 봄
+
+
+# 5-1. (GET) 공정성 상세 (대시보드용) - 구조가 깊어 dict로 통과시킴 (필드는 fairness.py의 fairness_summary 참고)
+class fairness_detail_response(BaseModel):
+    thresholds: Dict[str, float]
+    info: Dict[str, Any]
+    non_miti: Dict[str, Any]
+    miti: Dict[str, Any]
 
 
 # 6. (GET) 모델 정확도
