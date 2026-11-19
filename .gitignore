@@ -17,3 +17,5 @@ data/processed/결과_구버전.csv
 .env
 
 .venv/
+
+backup/
