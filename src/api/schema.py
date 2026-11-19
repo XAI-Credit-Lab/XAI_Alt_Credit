@@ -59,6 +59,7 @@ class explain_request(predict_request): # 입력값-/predict입력값 상속
     pass
 class reason(BaseModel): # 거절 사유
     feature : str # 변수명
+    feature_label : str # 화면에 보여줄 이름 (예: 부채 비율)
     current_value : Optional[float]   # 미입력이면 null
     shap_contribution : float # shap 기여도
     explanation : str # 자연어 설명
@@ -68,9 +69,17 @@ class explain_response(BaseModel):
     shap_values : dict[str, float]
 
 
+# 3-1. (POST) XAI 이미지: 거절 사유 top 5, SHAP Waterfall, Summary, Dependence plot 이미지 반환
+# 이미지 생성 실패시 해당 이미지만 null이 되고, 거절 사유, 나머지 이미지는 반환되도록 Optional 설정
+class explain_plots_response(BaseModel):
+    approval_status: str
+    rejection_reasons: List[reason]
+    waterfall_png: Optional[str] = None
+    summary_png : Optional[str] = None
+    dependence_png : Optional[Dict[str, str]] = None
+
+
 # 4. (GET) 공정성 검증(non-mitigation) -> DI ratio, tpr, fpr
-# 모델 -> 공정성 import에서 공정성 -> 모델 import구조로 변경,
-# src/fairness/fairness.py 호출
 class fairness_request(BaseModel):
     pass
 class fairness_response(BaseModel): #fairness.py가 None을 반환할 수 있으므로 Optional[float]처리 -> None도 허용
