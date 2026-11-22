@@ -23,7 +23,10 @@ KST = timezone(timedelta(hours=9))   # 한국 표준시
 
 MODEL_DIR = PROJECT_ROOT / "models"
 
-IS_THIN_FILER = {"is_thin_filer"} # is_thin_filer feature: 사용자가 입력하지 않고 서버가 계산
+# 사용자가 입력하지 않는 컬럼 (경고 검사에서 제외)
+# is_thin_filer: to_features()에서 서버가 계산
+# past_due_code_flag: 전처리기 transform()에서 연체 컬럼의 96/98 코드 여부로 계산
+SERVER_COMPUTED = {"is_thin_filer", "past_due_code_flag"}
 
 # 모델 변수명(영어 원래 이름) -> 화면에 보여줄 한글 이름
 # 거절 사유의 설명 문장과 feature_label에 사용 (대시보드 사이드바 입력 폼의 이름과 동일하게)
@@ -72,7 +75,7 @@ async def lifespan(app: FastAPI):
 
     # raw_cols    = 전처리기가 필요로 하는 컬럼 이름들
     # missing(결측 컬럼): 전처리기 입력 컬럼(raw_cols)에는 있는데 요청 스키마(schema_cols, IS_THIN_FILER)에 없음
-    missing = [c for c in art["raw_cols"] if c not in schema_cols and c not in IS_THIN_FILER] 
+    missing = [c for c in art["raw_cols"] if c not in schema_cols and c not in SERVER_COMPUTED]
     if missing: # 결측 걸럼 있으면
         print(f"[api] 경고: 요청 스키마에 없는 입력 컬럼(결측으로 처리됨): {missing}")
 

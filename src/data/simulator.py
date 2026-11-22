@@ -112,6 +112,15 @@ TRAD_INFO_COLS = DELINQ_COLS + [
 
 THIN_INFO_LOSS = 0.5   # 씬파일러의 기존 변수 값 중 50%를 정보 없는 값으로 교체 (가정값)
 
+# DebtRatio 교체 시 기증자(donor)를 받는 사람의 소득 상태에 맞춰 고름
+#   - GMSC 원본은 소득이 결측이거나 0~1이면 DebtRatio 칸에 비율이 아니라 '부채 금액'이 들어 있음
+#   - 아무나 기증자로 고르면 '소득 있는 사람 + 남의 부채 금액' 조합이 생김 (이전 버전에서 14,977행 발생)
+#   - 월 소득은 성별·페르소나(주부 = 소득 결측/2,000 미만) 판정에 쓰이므로 바꾸지 않고,
+#     DebtRatio만 '소득 상태·소득 구간이 같은 사람'에게서 가져온다
+VALID_INCOME_MIN = 1      # 월 소득이 이 값 이하(0, 1)이거나 결측이면 '소득 정보 없음'으로 봄
+DEBT_MATCH_BANDS = 5      # 소득 있는 사람은 소득 5분위 구간이 같은 기증자에게서 DebtRatio를 가져옴
+DEBT_MATCH_SEED = 4242    # DebtRatio 기증자 선택 전용 난수 (주 난수열을 건드리지 않아 다른 컬럼·승인 라벨은 이전과 동일)
+
 # 모델 피처가 아닌 컬럼 (라벨·보호 속성·대리변수) - 전처리 단계에서 제외할 때 참고
 NON_FEATURE_COLS = ["approved", "gender", "persona", "age", "age_group"]
 
@@ -276,6 +285,33 @@ def add_persona(df):
 # 데이터 생성 - 씬파일러·승인 라벨
 # =====================================================================
 
+def _income_matched_debt_ratio(df, donors, receivers, bands=DEBT_MATCH_BANDS, seed=DEBT_MATCH_SEED):
+    """받는 사람(receivers)마다 소득 상태가 같은 기증자의 DebtRatio를 골라 반환
+
+    - 소득 정보 없음(결측·0~1) → 소득 정보 없는 기증자 (DebtRatio = 금액, 전처리에서 결측 처리됨)
+    - 소득 있음               → 소득 있는 기증자 중 소득 분위 구간이 같은 사람 (DebtRatio = 비율)
+    """
+    match_rng = np.random.default_rng(seed)
+    income = df["MonthlyIncome"].to_numpy(dtype=float)
+    debt = df["DebtRatio"].to_numpy(dtype=float)
+    valid = ~np.isnan(income) & (income > VALID_INCOME_MIN)
+
+    # 소득 구간 경계는 기증자(소득 있음) 분포로 정함 → 받는 사람도 같은 경계로 구간 배정
+    d_valid = donors[valid[donors]]
+    edges = np.unique(np.quantile(income[d_valid], np.linspace(0, 1, bands + 1)[1:-1]))
+    band = np.full(len(df), -1)                       # -1 = 소득 정보 없음
+    band[valid] = np.searchsorted(edges, income[valid], side="right")
+
+    out = np.empty(len(receivers))
+    for b in np.unique(band[receivers]):
+        pool = donors[band[donors] == b]
+        if len(pool) == 0:                            # 같은 구간 기증자가 없으면 소득 상태만 맞춤
+            pool = d_valid if b >= 0 else donors[~valid[donors]]
+        sel = band[receivers] == b
+        out[sel] = debt[match_rng.choice(pool, size=sel.sum())]
+    return out
+
+
 def inject_thin_filers(df, rng, thin_filer_ratio, thin_info_loss=THIN_INFO_LOSS):
     """전체의 thin_filer_ratio 만큼 씬파일러로 만들고 is_thin_filer 컬럼 생성"""
     n = len(df)
@@ -299,7 +335,10 @@ def inject_thin_filers(df, rng, thin_filer_ratio, thin_info_loss=THIN_INFO_LOSS)
     donors = np.flatnonzero(~selected)
     for col in TRAD_INFO_COLS:
         replace = selected & (rng.random(n) < thin_info_loss)
+        # 주 난수열 소비량을 이전과 같게 유지 (DebtRatio도 일단 뽑고, 아래에서 소득 맞춤 값으로 덮어씀)
         donor_vals = df[col].to_numpy()[rng.choice(donors, size=replace.sum())]
+        if col == "DebtRatio":
+            donor_vals = _income_matched_debt_ratio(df, donors, np.flatnonzero(replace))
         df.loc[replace, col] = donor_vals
 
     # 씬파일러의 60%는 연체 컬럼 3개 중 2개를 결측 처리

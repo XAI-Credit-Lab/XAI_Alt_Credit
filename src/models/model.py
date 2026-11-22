@@ -89,7 +89,7 @@ from src.data.simulator import ALT_COLS   # 대안변수 목록은 시뮬레이�
 # ----------------------------------------------------------------------
 # 파일명에 들어가는 버전. main()에서 --with-smote 여부에 따라 아래 둘 중 하나로 정해짐
 VERSION_WITH_SMOTE = "1.1"    # class_weight vs SMOTE 비교 (기록용)
-VERSION_NO_SMOTE = "1.2"      # class_weight만 (최종)
+VERSION_NO_SMOTE = "1.3"      # class_weight만 (최종)
 MODEL_VERSION = VERSION_NO_SMOTE
 MODEL_DIR = PROJECT_ROOT / "models"   # 모델 저장 폴더
 

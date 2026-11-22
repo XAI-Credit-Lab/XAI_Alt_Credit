@@ -1,0 +1,183 @@
+{
+  "model_version": "1.3",
+  "trained_at": "2026-11-22T18:12:13",
+  "best_model": {
+    "algorithm": "lightgbm",
+    "imbalance": "class_weight",
+    "file": "lightgbm_v1.3.pkl",
+    "threshold": 0.8170472364669837,
+    "approval_rate": 0.7,
+    "approval_cutoff": 0.30955004789135937,
+    "test_approval_rate": 0.7065333333333333,
+    "grade_quantiles": [
+      0.2,
+      0.45,
+      0.7,
+      0.85
+    ],
+    "grade_labels": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E"
+    ],
+    "grade_cutoffs": [
+      0.04335023922906917,
+      0.12198238174548108,
+      0.30955004789135937,
+      0.5632801183393874
+    ]
+  },
+  "preprocessor_file": "preprocessor_v1.3.joblib",
+  "feature_names": [
+    "RevolvingUtilizationOfUnsecuredLines",
+    "NumberOfTime30-59DaysPastDueNotWorse",
+    "DebtRatio",
+    "MonthlyIncome",
+    "NumberOfOpenCreditLinesAndLoans",
+    "NumberOfTimes90DaysLate",
+    "NumberRealEstateLoansOrLines",
+    "NumberOfTime60-89DaysPastDueNotWorse",
+    "NumberOfDependents",
+    "telecom_payment_rate",
+    "utility_payment_rate",
+    "spending_consistency",
+    "regular_payment_count",
+    "app_login_frequency",
+    "card_history_months",
+    "past_due_code_flag",
+    "missingindicator_RevolvingUtilizationOfUnsecuredLines",
+    "missingindicator_NumberOfTime30-59DaysPastDueNotWorse",
+    "missingindicator_DebtRatio",
+    "missingindicator_MonthlyIncome",
+    "missingindicator_NumberOfTimes90DaysLate",
+    "missingindicator_NumberOfTime60-89DaysPastDueNotWorse",
+    "missingindicator_NumberOfDependents"
+  ],
+  "shap_check": {
+    "xgboost": {
+      "imbalance": "class_weight",
+      "explainer_type": "TreeExplainer",
+      "n_repeat": 30,
+      "n_rows": 200,
+      "top_k": 3,
+      "reason_change_rate": 0.0,
+      "additivity_max_err": 3.0994415283203125e-06,
+      "passed": true
+    },
+    "lightgbm": {
+      "imbalance": "class_weight",
+      "explainer_type": "TreeExplainer",
+      "n_repeat": 30,
+      "n_rows": 200,
+      "top_k": 3,
+      "reason_change_rate": 0.0,
+      "additivity_max_err": 1.0658141036401503e-14,
+      "passed": true
+    }
+  },
+  "final_metrics": {
+    "cv_auc_mean": 0.8831293961087692,
+    "cv_auc_std": 0.004113854069519205,
+    "threshold": 0.8170472364669837,
+    "psi": 0.0005277307248978792,
+    "val_auc": 0.8865285066963111,
+    "val_ks": 0.6160185526726468,
+    "val_f1": 0.5271576141286238,
+    "val_precision": 0.5283901135604543,
+    "val_recall": 0.5259308510638298,
+    "test_auc": 0.8845081750627274,
+    "test_ks": 0.6079063185287572,
+    "test_f1": 0.5165472534971,
+    "test_precision": 0.5304835318850736,
+    "test_recall": 0.5033244680851063,
+    "test_auc_thin_filer": 0.8444295742041886,
+    "test_auc_thin_filer_without_alt": 0.7310595384142241,
+    "test_auc_thin_filer_with_alt": 0.8444295742041886,
+    "thin_filer_auc_uplift": 0.11337003578996452,
+    "test_auc_without_alt": 0.8400287681442868,
+    "all_targets_passed": 1.0
+  },
+  "targets": {
+    "test_auc": {
+      "value": 0.8845081750627274,
+      "target": ">= 0.78",
+      "pass": true
+    },
+    "test_ks": {
+      "value": 0.6079063185287572,
+      "target": ">= 0.28",
+      "pass": true
+    },
+    "thin_filer_auc_uplift": {
+      "value": 0.11337003578996452,
+      "target": ">= 0.03",
+      "pass": true
+    },
+    "psi": {
+      "value": 0.0005277307248978792,
+      "target": "< 0.1",
+      "pass": true
+    }
+  },
+  "experiments": [
+    {
+      "algorithm": "logistic_regression",
+      "imbalance": "class_weight",
+      "cv_auc_mean": 0.8809608035369788,
+      "cv_auc_std": 0.005473810191241185,
+      "threshold": 0.8107080954523901,
+      "psi": 0.0006191604422111915,
+      "val_auc": 0.8817664230876803,
+      "val_ks": 0.6012919634134972,
+      "val_f1": 0.503854455750848,
+      "val_precision": 0.46981023576768255,
+      "val_recall": 0.543218085106383,
+      "test_auc": 0.8815946578476954,
+      "test_ks": 0.5961367261443922,
+      "test_f1": 0.5030091859360152,
+      "test_precision": 0.48033877797943136,
+      "test_recall": 0.5279255319148937,
+      "test_auc_thin_filer": 0.8479869412253753
+    },
+    {
+      "algorithm": "xgboost",
+      "imbalance": "class_weight",
+      "cv_auc_mean": 0.8824262074095998,
+      "cv_auc_std": 0.004345623446322449,
+      "threshold": 0.8101314306259155,
+      "psi": 0.000789783142443323,
+      "val_auc": 0.884791283699428,
+      "val_ks": 0.6145400542352545,
+      "val_f1": 0.5185916419874959,
+      "val_precision": 0.5133550488599349,
+      "val_recall": 0.523936170212766,
+      "test_auc": 0.8827534556987553,
+      "test_ks": 0.6060736492867942,
+      "test_f1": 0.5154986522911051,
+      "test_precision": 0.5225409836065574,
+      "test_recall": 0.5086436170212766,
+      "test_auc_thin_filer": 0.8424585914502879
+    },
+    {
+      "algorithm": "lightgbm",
+      "imbalance": "class_weight",
+      "cv_auc_mean": 0.8831293961087692,
+      "cv_auc_std": 0.004113854069519205,
+      "threshold": 0.8170472364669837,
+      "psi": 0.0005277307248978792,
+      "val_auc": 0.8865285066963111,
+      "val_ks": 0.6160185526726468,
+      "val_f1": 0.5271576141286238,
+      "val_precision": 0.5283901135604543,
+      "val_recall": 0.5259308510638298,
+      "test_auc": 0.8845081750627274,
+      "test_ks": 0.6079063185287572,
+      "test_f1": 0.5165472534971,
+      "test_precision": 0.5304835318850736,
+      "test_recall": 0.5033244680851063,
+      "test_auc_thin_filer": 0.8444295742041886
+    }
+  ]
+}
