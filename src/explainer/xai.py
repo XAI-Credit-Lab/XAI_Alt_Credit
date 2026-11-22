@@ -19,7 +19,21 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-         
+from matplotlib import font_manager
+from src.data.feature_spec import build_rejection_reasons, label, format_value, FEATURE_SPEC
+
+def _set_korean_font():
+    """그래프의 한글이 깨지지 않도록 설치된 한글 폰트 사용
+    (Docker: NanumGothic / 로컬 Windows: Malgun Gothic / Mac: AppleGothic)"""
+    installed = {f.name for f in font_manager.fontManager.ttflist}
+    for name in ("NanumGothic", "Malgun Gothic", "AppleGothic"):
+        if name in installed:
+            plt.rcParams["font.family"] = name
+            break
+    plt.rcParams["axes.unicode_minus"] = False   # 한글 폰트에서 마이너스 기호가 깨지는 문제 방지
+
+_set_korean_font()
+
 class ModelExplainer:
     # 승인 고객의 거절 사유 최소 기여도 (Explainer 종류마다 SHAP 단위가 달라 따로 둠)
     MIN_CONTRIB_KERNEL = 0.01   # KernelExplainer: 부도 확률 단위, 0.01 = 1%p
@@ -34,8 +48,9 @@ class ModelExplainer:
                  global_sample_size: Optional[int] = None, # Summary/Dependence용 표본 크기 (None이면 Tree 2000, Kernel 100)
                  random_state: int = 42,
                  exclude_from_reasons=("is_thin_filer",), # 기여 변수 top에서 "is_thin_filer" 변수는 제외
-                 raw_means: Optional[dict] = None, # 전처리전 원본 평균을 따로 받기
-                 raw_scales: Optional[dict] = None,      # 변수별 원본 단위 표준편차 (scaler.scale_)
+                 raw_means: Optional[dict] = None, # 원본 입력에 없는 값을 원래 단위로 복원 (StandardScaler 평균)
+                 raw_scales: Optional[dict] = None,      # 위 복원용 (StandardScaler 표준편차)
+                 raw_medians: Optional[dict] = None,     # 거절 사유 문장의 비교 기준 (Train 중앙값)
                  min_contribution: Optional[float] = None,   # None이면 Explainer 종류에 맞춰 자동 선택
                  feature_labels: Optional[dict] = None   # {변수명: 화면에 보여줄 이름}. 설명 문장에 사용, 없는 변수는 원래 이름
     ):
@@ -44,9 +59,10 @@ class ModelExplainer:
         self.random_state = random_state 
         # KernelExplainer 계산용 잠금: 난수 고정 + 계산을 한 번에 하나씩 (아래 _shap_for 참고)
         self._kernel_lock = threading.Lock()
-        # 자연어 설명의 기준값: 원본 단위 평균이 주어지면 그것을, 없으면 background 평균(표준화 값)
+        # 원본 입력에 없는 값 복원용
         self.feature_means = pd.Series(raw_means) if raw_means is not None else background.mean()
-        self.raw_scales = raw_scales or {}                 # 표준화 되돌리기용 표준편차
+        self.raw_scales = raw_scales or {}
+        self.raw_medians = raw_medians or {}
         self.exclude_from_reasons = tuple(exclude_from_reasons)  # startswith()는 tuple을 받음
         self.feature_labels = feature_labels or {}   # None이 들어와도 .get()이 되도록 빈 dict
 
@@ -157,71 +173,39 @@ class ModelExplainer:
     # 1. 개별 고객 설명 (API /explain용)
     # ------------------------------------------------------------------
     def explain(self, user_input, top_k: int = 5, raw_values: Optional[dict] = None,
-            only_positive: bool = True, use_min_contribution: bool = False):  
+                use_min_contribution: bool = False):
+        """개별 고객 SHAP + 거절 사유 Top K
+        - 후보 선정(제외 변수, 승인 고객 최소 기여도)은 여기서
+        - 문장·단위·비교 기준(중앙값) 표시는 feature_spec.build_rejection_reasons()
+        raw_values: 사용자 원본 입력 {컬럼명: 값}, 미입력은 None"""
         x = self._to_frame(user_input)
         sv, base_value = self._shap_for(x)
-        values = sv[0] # 입력: 한 행 -> 각 변수의 shap값: 첫 번째 행
+        shap_dict = {name: float(v) for name, v in zip(self.columns, sv[0])}
 
-
-        # 거절 사유 후보: 제외 변수(is_thin_filer 등) 빼고, only_positive면 SHAP > threshold만
-        # use_min_contribution=True: 기여도가 self.min_contribution보다 큰 변수만 (의미 없는 작은 값 제외)
-        # use_min_contribution=False: 부도 확률을 조금이라도 높인(SHAP > 0) 변수 모두
+        # 거절 사유 후보: 제외 변수(is_thin_filer, missingindicator_, past_due_code_flag) 빼고
+        # use_min_contribution=True(승인 고객): 기여도가 self.min_contribution보다 큰 변수만
+        # use_min_contribution=False(거절 고객): 부도 위험을 조금이라도 높인(SHAP > 0) 변수 모두
         threshold = self.min_contribution if use_min_contribution else 0.0
-        candidates = [
-            (name, v) for name, v in zip(self.columns, values)
-            if not name.startswith(self.exclude_from_reasons)
-            and (v > threshold or not only_positive)
-        ]
-        # 부도 확률을 많이 높인 순서로 top_k개
-        # (only_positive=False일 때는 영향력 크기 기준이 되도록 절댓값으로 정렬)
-        sort_key = (lambda t: t[1]) if only_positive else (lambda t: abs(t[1]))
-        top = sorted(candidates, key=sort_key, reverse=True)[:top_k]
+        candidates = {name: v for name, v in shap_dict.items()
+                      if not name.startswith(self.exclude_from_reasons) and v > threshold}
 
-        raw_values = raw_values or {}   # None이 들어와도 'in' 검사가 되도록
-        reasons = []
+        # 문장에 보여줄 값: 사용자 원본 입력 우선 (미입력은 None → '미입력이어서 중앙값으로 계산' 문장)
+        # 원본 입력에 아예 없는 변수는 모델이 실제로 쓴 값을 원본 단위로 복원 (used)
+        #   used = 표준화 값 × 표준편차(raw_scales) + 평균(raw_means)  ← StandardScaler 역변환
+        values = dict(raw_values or {})
+        for name in candidates:
+            if name not in values and name in self.raw_scales:
+                scaled = float(x.iloc[0][name])
+                values[name] = scaled * self.raw_scales[name] + float(self.feature_means[name])
 
-        for name, contrib in top:
-            label = self._label(name)          # 화면에 보여줄 이름 (예: "DebtRatio" -> "부채 비율")
-            scaled = float(x.iloc[0][name])   # 전처리 후 값 (표준화됨)
-
-            # 모델이 실제로 사용한 값을 원본 단위로 복원 (미입력이면 대체값)
-            if name in self.raw_scales:
-                used = scaled * self.raw_scales[name] + float(self.feature_means[name])
-            else:
-                used = scaled
-
-            # 평균: 원본 평균이 있으면 그것, 없으면 전역 데이터(표준화) 평균
-            if name in self.feature_means.index:
-                mean = float(self.feature_means[name])
-            else:
-                mean = float(self._global_X[name].mean())
-
-            # 키는 있는데 값이 None → 사용자가 입력하지 않은 항목
-            if name in raw_values and raw_values[name] is None:
-                current = None
-                desc = f"{label}: 미입력 (대체값 {used:,.2f}(으)로 계산됨) (기여도: {contrib:+.3f})"
-            else:
-                raw = raw_values.get(name)
-                current = float(raw) if raw is not None else used   # 원본 입력 우선, 없으면 복원값
-
-                if current > mean:
-                    direction = "높습니다"
-                elif current < mean:
-                    direction = "낮습니다"
-                else:
-                    direction = "같습니다"
-                desc = f"{label}이(가) {current:,.2f}(으)로, 평균({mean:,.2f}) 대비 {direction} (기여도: {contrib:+.3f})"
-            reasons.append({
-                "feature": name,               # 원래 변수명 (프로그램이 변수를 구분하는 기준)
-                "label": label,                # 화면에 보여줄 이름
-                "value": current,
-                "shap_val": float(contrib),
-                "description": desc
-            })
+        result = build_rejection_reasons(values, candidates, self.raw_medians, top_k=top_k)
+        for r in result["rejection_reasons"]:
+            r["feature_label"] = r["feature_name_kr"]   # 이전 필드 이름 호환
         return {
             "base_value": base_value,
-            "rejection_reasons": reasons,
-            "shap_values": {name: float(v) for name, v in zip(self.columns, values)}
+            "rejection_reasons": result["rejection_reasons"],
+            "total_rejection_factors": result["total_rejection_factors"],
+            "shap_values": shap_dict,   # 전체 변수 (대시보드 막대그래프, waterfall 재사용)
         }
 
     # ------------------------------------------------------------------
@@ -313,11 +297,16 @@ class ModelExplainer:
             shown = []
             for name, v in zip(self.columns, data):
                 raw = display_values.get(name, v)
-                shown.append("N/A" if raw is None or (isinstance(raw, float) and np.isnan(raw)) else raw)
+                if raw is None or (isinstance(raw, float) and np.isnan(raw)):
+                    shown.append("N/A")
+                elif name in FEATURE_SPEC:
+                    shown.append(format_value(name, raw))   # 예: 0.99 -> '99%', 4800 -> '4,800달러'
+                else:
+                    shown.append(raw)
             data = np.array(shown, dtype=object)
 
-        exp = shap.Explanation(values=values, base_values=base_value,
-                               data=data, feature_names=self.columns)
+        exp = shap.Explanation(values=values, base_values=base_value, data=data,
+                               feature_names=[label(c) for c in self.columns])   # 한글 이름 (feature_spec)
         plt.figure()
         shap.plots.waterfall(exp, max_display=max_display, show=False)
         return self._to_base64(plt.gcf())
