@@ -12,7 +12,7 @@ WORKDIR /app
 # 윈도우 - 해당 기능 제공하는 라이브러리가 LightGBM, XGBoost패키지에 포함되어 있거나 OS에 이미 있어서 따로 설치할 필요 없었음
 # 리눅스용 LightGBM, python:slim 이미지에는 이 라이브러리가 빠져 있음 -> 직접 설치
 # build-essential: shap에 필요한 g++ 등 컴파일 도구 모음
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 build-essential \
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 build-essential fonts-nanum \
     && rm -rf /var/lib/apt/lists/*
 
 COPY src/api/requirements.txt .
