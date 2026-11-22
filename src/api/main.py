@@ -10,11 +10,13 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from src.data.preprocessor import PROJECT_ROOT, DEFAULT_SAVE, CreditPreprocessor
+from src.data.preprocessor import PROJECT_ROOT, DEFAULT_SAVE, VALID_INCOME_MIN, CreditPreprocessor
 from src.data.simulator import is_thin_filer # 사용자 입력에 is_thin_filer feature 추가 용도
+from src.data.feature_spec import format_value
 
 from datetime import datetime, timezone, timedelta
 import threading
+import re
 
 from src.explainer.xai import ModelExplainer
 from src.fairness.fairness import model_fairness, model_fairness_detail
@@ -23,34 +25,26 @@ KST = timezone(timedelta(hours=9))   # 한국 표준시
 
 MODEL_DIR = PROJECT_ROOT / "models"
 
+def latest_meta_path():
+    # models/의 model_meta_v{버전}.json 중 버전 숫자가 가장 큰 파일 (v1.10 > v1.9, 숫자 비교)
+    pattern = re.compile(r"model_meta_v(\d+(?:\.\d+)*)\.json$")
+    candidates = []
+    for p in MODEL_DIR.glob("model_meta_v*.json"):
+        m = pattern.match(p.name)
+        if m:
+            candidates.append((tuple(int(x) for x in m.group(1).split(".")), p))
+    if not candidates:
+        raise FileNotFoundError(f"{MODEL_DIR}에 model_meta_v*.json 파일이 없습니다.")
+    return max(candidates)[1]
+
+def unwrap_model(model):
+    # SMOTE 선택돼도 TreeExplainer 사용 가능하도록
+    return model.named_steps["clf"] if hasattr(model, "named_steps") else model
+
 # 사용자가 입력하지 않는 컬럼 (경고 검사에서 제외)
 # is_thin_filer: to_features()에서 서버가 계산
 # past_due_code_flag: 전처리기 transform()에서 연체 컬럼의 96/98 코드 여부로 계산
 SERVER_COMPUTED = {"is_thin_filer", "past_due_code_flag"}
-
-# 모델 변수명(영어 원래 이름) -> 화면에 보여줄 한글 이름
-# 거절 사유의 설명 문장과 feature_label에 사용 (대시보드 사이드바 입력 폼의 이름과 동일하게)
-# 여기 없는 변수는 원래 이름 그대로 표시됨
-FEATURE_LABELS = {
-    # 기존 금융 변수
-    "RevolvingUtilizationOfUnsecuredLines": "회전 한도 사용률",
-    "DebtRatio": "부채 비율",
-    "NumberOfOpenCreditLinesAndLoans": "개설 대출·카드 수",
-    "NumberRealEstateLoansOrLines": "부동산 대출 수",
-    "card_history_months": "카드 이용 기간(개월)",
-    "MonthlyIncome": "월 소득",
-    "NumberOfDependents": "부양 가족 수",
-    # 연체 관련
-    "NumberOfTime30-59DaysPastDueNotWorse": "30~59일 연체 (최근 2년)",
-    "NumberOfTime60-89DaysPastDueNotWorse": "60~89일 연체 (최근 2년)",
-    "NumberOfTimes90DaysLate": "90일 이상 연체",
-    # 대안 변수
-    "telecom_payment_rate": "통신비 납부율",
-    "utility_payment_rate": "공과금 납부율",
-    "spending_consistency": "소비 일관성 (0~100)",
-    "regular_payment_count": "정기 결제 건수",
-    "app_login_frequency": "앱 로그인 빈도",
-}
 
 art: dict = {}
 
@@ -59,14 +53,17 @@ art: dict = {}
 # /predict든 SHAP용 /explain이든 모든 엔드포인트에서 art["model"], art["pre"], art["meta"]를 그대로 꺼내 쓸 수 있음
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    meta = json.loads((MODEL_DIR / "model_meta_v1.2.json").read_text(encoding="utf-8")) # model_meta_v1.2.json 파일 로드
-    pre = CreditPreprocessor.load(DEFAULT_SAVE.parent / "preprocessor_v1.2.joblib")   # 전처리기
+    meta_path = latest_meta_path()
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) # 모델
+    pre_file = meta.get("preprocessor_file", DEFAULT_SAVE.name)
+    pre = CreditPreprocessor.load(DEFAULT_SAVE.parent / pre_file) # 전처리기
+    print(f"[api] 모델 메타 {meta_path.name} / 전처리기 {pre_file} / 모델 {meta['best_model']['file']}")
     # {'meta': 메타 파일, 'pre': 전처리기 파일} 형식 됨
     art["meta"] = meta # model_meta.json
     art["model"] = joblib.load(MODEL_DIR / meta["best_model"]["file"])
     art["pre"] = pre # 전처리기 파일
     art["num_cols"] = list(pre.numeric_cols_)       # 전처리기에서 수치형 원본 컬럼
-    art["cat_cols"] = list(pre.categorical_cols_)   # 범주형 원본 컬럼 (is_thin_filer)
+    art["cat_cols"] = list(pre.categorical_cols_) 
     art["raw_cols"] = art["num_cols"] + art["cat_cols"] # 수치형 컬럼, 범주형 컬럼 리스트 합쳐짐
 
 
@@ -74,7 +71,7 @@ async def lifespan(app: FastAPI):
     schema_cols = {f.alias or name for name, f in schema.predict_request.model_fields.items()}
 
     # raw_cols    = 전처리기가 필요로 하는 컬럼 이름들
-    # missing(결측 컬럼): 전처리기 입력 컬럼(raw_cols)에는 있는데 요청 스키마(schema_cols, IS_THIN_FILER)에 없음
+    # missing(결측 컬럼): 전처리기 입력 컬럼(raw_cols)에는 있는데 요청 스키마(schema_cols)에 없음
     missing = [c for c in art["raw_cols"] if c not in schema_cols and c not in SERVER_COMPUTED]
     if missing: # 결측 걸럼 있으면
         print(f"[api] 경고: 요청 스키마에 없는 입력 컬럼(결측으로 처리됨): {missing}")
@@ -83,28 +80,31 @@ async def lifespan(app: FastAPI):
     if pre.feature_names != meta["feature_names"]:
         raise RuntimeError("전처리기와 모델 메타의 feature_names가 다릅니다. 학습을 다시 실행하세요.")
 
-    # SHAP 설명기: 서버 시작시 한 번만 생성
-    background = pd.read_csv(PROJECT_ROOT / "data" / "processed" / "X_train.csv")
-    background = background[meta["feature_names"]] # # 컬럼 순서를 모델 학습 순서로 맞춤
+    background = pd.read_csv(PROJECT_ROOT / "data" / "processed" / "X_train.csv", index_col=0)
+    lack = [c for c in meta["feature_names"] if c not in background.columns]
+    if lack:
+        raise RuntimeError(f"X_train.csv가 현재 전처리기({pre_file})와 맞지 않습니다. 없는 피처: {lack}\n"
+                           "  -> python -m src.data.preprocessor 로 분할 파일을 다시 만드세요.")
+    background = background[meta["feature_names"]]   # 컬럼 순서를 모델 학습 순서로 맞춤
 
-    # 자연어 설명용 원본 단위 평균·표준편차 (수치형 파이프라인의 StandardScaler에서 가져옴)
-    # 결측 지시변수(missingindicator_...) 5개 포함 총 20개 변수
+    # 원본 입력에 없는 값 복원용
     scaler = pre.transformer_.named_transformers_["num"].named_steps["scaler"]
     scaler_names = list(scaler.feature_names_in_)
     raw_means  = {n: float(m) for n, m in zip(scaler_names, scaler.mean_)}
     raw_scales = {n: float(s) for n, s in zip(scaler_names, scaler.scale_)}
 
+    # 설명기 - 서버 시작시 한 번 만 생성
     art["explainer"] = ModelExplainer(
-        art["model"],
+        unwrap_model(art["model"]),
         background,
         predict_fn = art["model"].predict_proba,
         class_index = 1,
-        raw_means = raw_means,     # 자연어 설명의 '평균'을 원본 단위로
-        raw_scales = raw_scales,   # 표준화 값을 원본 단위로 되돌리는 용도
+        raw_means = raw_means,    # 원본 입력에 없는 값을 원래 단위로 복원 (StandardScaler 평균)
+        raw_scales = raw_scales,   # 위 복원용 (StandardScaler 표준편차)
+        raw_medians = pre.medians_,        # 거절 사유 문장의 비교 기준 (Train 중앙값)
         # is_thin_filer: 서버가 계산한 값 / missingindicator_: 사용자 입력이 아닌 결측 지시변수
         # past_due_code_flag: 전처리기가 만드는 기록 이상 코드 여부 (API 입력으로는 항상 0) -> 거절사유 top에서 제외
-        exclude_from_reasons = ("is_thin_filer", "missingindicator_", "past_due_code_flag"),
-        feature_labels = FEATURE_LABELS,   # 설명 문장에 쓸 한글 변수명
+        exclude_from_reasons = ("is_thin_filer", "missingindicator_", "past_due_code_flag")
     )
 
     # 공정성 지표
@@ -140,6 +140,22 @@ def to_features(req: schema.predict_request) -> pd.DataFrame: # 결과: pd.DataF
     raw["is_thin_filer"] = is_thin_filer(raw).astype(int) # is_thin_filer: 시뮬레이터 규칙대로 계산
     return art["pre"].transform(raw)  #preprocessor.py의 transform(): 96/98 결측화, 상한, 대체, 스케일, 원-핫
 
+# 소득이 미입력이면 deptratio를 중앙값으로 대체되었다고 안내
+def display_values(req: schema.predict_request) -> dict:
+    raw_input = req.model_dump(by_alias=True)
+    income = raw_input.get("MonthlyIncome")
+    if income is None or income <= VALID_INCOME_MIN:
+        raw_input["DebtRatio"] = None
+    return raw_input
+
+def note_unused_debt_ratio(data: schema.predict_request, raw_input: dict, reasons: list) -> None:
+    """월 소득이 없어 부채 비율이 반영되지 않은 경우, '미입력' 대신 이유를 알려 줌"""
+    if raw_input.get("DebtRatio") is None and data.DebtRatio is not None:
+        for r in reasons:
+            if r["feature"] == "DebtRatio":
+                ref = format_value("DebtRatio", r["reference_value"])
+                r["explanation"] = (f"월 소득이 없어 입력한 부채 비율을 반영하지 않고 중앙값({ref})으로 계산했습니다 "
+                                    f"(기여도: {r['shap_contribution']:+.3f})")
 
 # 모델 예측 함수 - /predict, /explain 공통 사용
 def predict_result(X) -> dict:
@@ -216,7 +232,7 @@ def explain(data : schema.explain_request):
     pred = predict_result(X)   # /predict
     # 사용자가 입력한 원본 값 (자연어 설명의 '현재 값' 표시용)
     # by_alias=True: 'NumberOfTime30-59DaysPastDueNotWorse' 같은 원래 컬럼 이름으로 키를 맞춤
-    raw_input = data.model_dump(by_alias=True)
+    raw_input = display_values(data)
 
     # 거절 사유 기준
     # 승인된 고객: 의미 있는 요인(xai.py의 min_contribution 초과)만 표시
@@ -226,21 +242,15 @@ def explain(data : schema.explain_request):
     try:
         result = art["explainer"].explain(X.iloc[0].to_dict(), top_k = 5, raw_values = raw_input,
                                           use_min_contribution = use_min)
+        note_unused_debt_ratio(data, raw_input, result["rejection_reasons"])
     except Exception as e:
         raise HTTPException(status_code = 500, detail = f"SHAP 설명 실패: {e}")
 
-    return{
-        "approval_status": pred["approval_status"],  # 모델 예측 결과
-        "rejection_reasons": [{
-            "feature": r["feature"],
-            "feature_label": r["label"],
-            "current_value": r["value"],
-            "shap_contribution": r["shap_val"],
-            "explanation": r["description"]
-        }
-        for r in result["rejection_reasons"]
-        ],
-        "shap_values": result["shap_values"]
+    return {
+        "approval_status": pred["approval_status"],
+        "rejection_reasons": result["rejection_reasons"],          # feature_spec 형식 그대로
+        "total_rejection_factors": result["total_rejection_factors"],
+        "shap_values": result["shap_values"],
     }
 
 #================================================================================================================================
@@ -254,7 +264,7 @@ def explain_plots(data : schema.explain_request):
     except Exception as e:
         raise HTTPException(status_code = 422, detail=f"전처리 실패: {e}")
     pred = predict_result(X)
-    raw_input = data.model_dump(by_alias=True)   # 원본 입력값 (자연어 설명, waterfall 왼쪽 값 표시용)
+    raw_input = display_values(data)
 
     # (2) 거절 사유 top 5 (/explain과 동일)
     #     승인된 고객: 의미 있는 요인(xai.py의 min_contribution 초과)만 표시
@@ -264,6 +274,9 @@ def explain_plots(data : schema.explain_request):
     try:
         result = art["explainer"].explain(X.iloc[0].to_dict(), top_k = 5, raw_values = raw_input,
                                           use_min_contribution = use_min)
+        # 월 소득이 없어 부채 비율이 반영되지 않은 경우, '미입력' 대신 이유를 알려 줌
+        note_unused_debt_ratio(data, raw_input, result["rejection_reasons"])
+
     except Exception as e:
         raise HTTPException(status_code = 500, detail = f"SHAP 설명 실패: {e}")
 
@@ -289,15 +302,8 @@ def explain_plots(data : schema.explain_request):
 
     return {
         "approval_status": pred["approval_status"],
-        "rejection_reasons": [{
-            "feature": r["feature"],
-            "feature_label": r["label"],
-            "current_value": r["value"],
-            "shap_contribution": r["shap_val"],
-            "explanation": r["description"]
-        }
-        for r in result["rejection_reasons"]
-        ],
+        "rejection_reasons": result["rejection_reasons"],
+        "total_rejection_factors": result["total_rejection_factors"],
         "waterfall_png": waterfall_png,
         "summary_png": plots["summary_png"],
         "dependence_png": plots["dependence_png"],
@@ -349,7 +355,7 @@ def fairness_detail():
 
 #================================================================================================================================
 # 6. (GET) 모델 정확도
-# models/model_meta_v1.2.json에서 값 로드
+# 최신 버전 meta_json에서 값 로드
 @router.get("/metrics", response_model = schema.metrics_response)
 def metrics():
     result = art["meta"]["final_metrics"]
