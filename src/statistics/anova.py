@@ -599,7 +599,7 @@ def run_all_anova(
         t2["selection_basis"] = (
             f"알고리즘 간 AUC 차이가 통계적으로 유의하지 않음(p={t2['p_value']}). "
             f"따라서 ANOVA 는 선정 근거가 아니며, 최종 모델({best_name or '미지정'})은 "
-            "Validation AUC 기준으로 선정함"
+            "Train 5-Fold CV AUC 평균 기준으로 선정함"
         )
 
     # 제약사항: "최소 1개 이상 검증에서 p < 0.05"
