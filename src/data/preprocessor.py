@@ -77,6 +77,28 @@ PAST_DUE_COLS = [
 PAST_DUE_INVALID = [96, 98]
 CLIP_QUANTILE = 0.99                           # 수치형 상위 1% 초과 값은 상한으로 자름
 
+# DebtRatio 정리 규칙 (data_audit_v1.2 결과 반영, 학습과 API에 같은 규칙 적용)
+#   - 월 소득이 결측이거나 0~1이면 DebtRatio 칸에 비율이 아니라 '부채 금액'이 들어 있음
+#     (소득 결측/0/1 행 31,970행의 DebtRatio 중앙값 393~928) → DebtRatio 결측 처리
+#   - 소득이 있어도 DebtRatio가 10(월 상환액이 소득의 10배)을 넘으면 비정상 → 결측 처리
+#     (원본 128행, 대부분 소득이 아주 작은 경우. 1~10 구간은 부도율 12.8%로 의미 있는 값이라 유지)
+#   - 결측은 이후 중앙값 대체 + 결측 지시변수(DebtRatio 결측 여부)로 처리됨
+#   - 값 10은 feature_spec.py 의 DebtRatio 입력 상한(max)과 같아야 함
+INCOME_COL, DEBT_RATIO_COL = "MonthlyIncome", "DebtRatio"
+VALID_INCOME_MIN = 1                           # 소득이 이 값 이하(0, 1)이면 소득 정보 없음으로 봄
+DEBT_RATIO_MAX = 10.0
+
+# RevolvingUtilization 정리 규칙 (원본 구간별 부도율 확인 결과 반영, 학습과 API에 같은 규칙 적용)
+#   - 1~1.5: 부도율 39.7%, 1.5~10: 38.7% → 한도 초과 사용 고객(실제 고위험)이라 값 유지
+#   - 10 초과(241행): 부도율 7.1%로 전체 평균(6.7%)과 같음 → 위험 신호가 없는 기록 오류로 보고 결측 처리
+#     (그대로 두면 상위 1% 상한으로 잘려 부도율 40% 집단과 같은 값이 됨)
+#   - 값 10은 feature_spec.py 의 입력 상한(max)과 같아야 함
+REVOLVING_COL = "RevolvingUtilizationOfUnsecuredLines"
+REVOLVING_MAX = 10.0
+
+# 거절 사유 문장의 비교 기준(Train 중앙값)을 평균과 함께 출력해 확인할 변수
+REFERENCE_CHECK_COLS = ["DebtRatio", "RevolvingUtilizationOfUnsecuredLines", "MonthlyIncome"]
+
 # 경로는 실행 위치(VS Code 작업 폴더 등)와 상관없이 이 파일 위치 기준으로 계산
 SCRIPT_DIR = Path(__file__).resolve().parent          # .../src/data
 PROJECT_ROOT = SCRIPT_DIR.parents[1]                  # .../XAI_Simulator-1
@@ -157,6 +179,9 @@ class CreditPreprocessor:
         self.dropped_cols_: list[str] = []
         self.transformer_: ColumnTransformer | None = None
         self.input_cols_: list[str] = []
+        # 거절 사유 비교 기준: 정리(_clean) 후, 변환 전 Train 원래 값의 중앙값
+        # (joblib에 같이 저장 → API에서 feature_spec.build_rejection_reasons(..., pre.medians_)로 사용)
+        self.medians_: dict[str, float] = {}
 
     @staticmethod
     def _fix_past_due(df: pd.DataFrame) -> pd.DataFrame:
@@ -166,6 +191,37 @@ class CreditPreprocessor:
         df["past_due_code_flag"] = df[cols].isin(PAST_DUE_INVALID).any(axis=1).astype(int)
         for c in cols:
             df[c] = df[c].where(~df[c].isin(PAST_DUE_INVALID), np.nan)
+        return df
+
+    @staticmethod
+    def _fix_debt_ratio(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
+        """소득 정보가 없거나(결측·0~1) DebtRatio가 상한을 넘는 행의 DebtRatio를 결측 처리"""
+        if DEBT_RATIO_COL not in df.columns:
+            return df
+        dr = pd.to_numeric(df[DEBT_RATIO_COL], errors="coerce")
+        if INCOME_COL in df.columns:
+            income = pd.to_numeric(df[INCOME_COL], errors="coerce")
+            no_income = income.isna() | (income <= VALID_INCOME_MIN)
+        else:                                          # 소득 컬럼 자체가 없으면 비율을 계산할 수 없음
+            no_income = pd.Series(True, index=df.index)
+        too_large = dr > DEBT_RATIO_MAX
+        if verbose:
+            print(f"[preprocessor] DebtRatio 결측 처리: 소득 정보 없음 {int((no_income & dr.notna()).sum()):,}행, "
+                  f"상한({DEBT_RATIO_MAX:g}) 초과 {int((~no_income & too_large).sum()):,}행")
+        df[DEBT_RATIO_COL] = dr.where(~(no_income | too_large), np.nan)
+        return df
+
+    @staticmethod
+    def _fix_revolving(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
+        """RevolvingUtilization이 상한(10)을 넘는 행을 결측 처리 (기록 오류)"""
+        if REVOLVING_COL not in df.columns:
+            return df
+        ru = pd.to_numeric(df[REVOLVING_COL], errors="coerce")
+        too_large = ru > REVOLVING_MAX
+        if verbose:
+            print(f"[preprocessor] RevolvingUtilization 결측 처리: 상한({REVOLVING_MAX:g}) 초과 "
+                  f"{int(too_large.sum()):,}행")
+        df[REVOLVING_COL] = ru.where(~too_large, np.nan)
         return df
 
     # ------------------------------------------------------------------
@@ -183,6 +239,8 @@ class CreditPreprocessor:
         df = df.drop(columns=drop)
 
         df = self._fix_past_due(df)
+        df = self._fix_debt_ratio(df, verbose=True)
+        df = self._fix_revolving(df, verbose=True)
 
         return df
 
@@ -282,6 +340,11 @@ class CreditPreprocessor:
         X_val_t = self.transformer_.transform(X_val)
         X_test_t = self.transformer_.transform(X_test)
 
+        # 거절 사유 비교 기준: Train 원래 값 중앙값 (결측 제외)
+        self.medians_ = {c: float(X_train[c].median()) for c in self.numeric_cols_
+                         if X_train[c].notna().any()}
+        self.reference_report(X_train)
+
         data = SplitData(
             X_train_t, X_val_t, X_test_t, y_train, y_val, y_test,
             sensitive.loc[X_train.index],
@@ -300,6 +363,8 @@ class CreditPreprocessor:
         if self.transformer_ is None:
             raise RuntimeError("먼저 process()로 학습해야 합니다.")
         df = self._fix_past_due(df.copy())
+        df = self._fix_debt_ratio(df)                  # 학습과 같은 규칙 (소득 미입력 → DebtRatio 미반영)
+        df = self._fix_revolving(df)                   # 학습과 같은 규칙 (10 초과 → 결측)
 
         # 학습 때 컬럼에 맞춤: 없는 컬럼은 결측 → 중앙값 대체, 남는 컬럼(age 등)은 버림
         missing = set(self.input_cols_) - set(df.columns)
@@ -330,6 +395,19 @@ class CreditPreprocessor:
             print(f"  {name:5s}: {len(y):>7,}행 ({len(y)/total:6.2%})  "
                   f"부도비율 {y.mean():.4f}  남은 결측 {int(X.isna().sum().sum())}")
         print(f"  피처 수: {data.X_train.shape[1]}")
+
+    @staticmethod
+    def reference_report(X_train: pd.DataFrame) -> None:
+        """거절 사유 비교 기준 확인용: 주요 변수의 Train 평균 vs 중앙값
+        (두 값이 크게 다르면 평균 기준 문장은 방향이 뒤집힐 수 있어 중앙값을 씀)"""
+        cols = [c for c in REFERENCE_CHECK_COLS if c in X_train.columns]
+        if not cols:
+            return
+        print("[preprocessor] 거절 사유 비교 기준 확인 (Train, 변환 전 값)")
+        for c in cols:
+            s = X_train[c]
+            print(f"  {c:40s} 평균 {s.mean():>10,.3f}  중앙값 {s.median():>10,.3f}  "
+                  f"최대 {s.max():>12,.3f}  결측 {s.isna().mean():.1%}")
 
     # ------------------------------------------------------------------
     # 저장 / 불러오기
