@@ -2,6 +2,8 @@
 # pydantic request/response schema 정의
 # ※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다
 
+# 반사실적 설명 엔드포인트 추가
+
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Any, List, Dict, Optional
 from src.data.feature_spec import field_bounds as fb
@@ -154,8 +156,28 @@ class anova_response(BaseModel):
 
 
 # # 8. (GET) 반사실적 설명
-# class counterfactual_request(BaseModel):
-#     pass
-# class counterfactual_response(BaseModel):
-#     # 구현 방법 필요
-#     pass
+class counterfactual_request(predict_request):       # 고객 입력은 /predict와 같음 (입력 범위 검사도 그대로)
+    total_cfs: int = Field(3, ge=1, le=5)             # 제안 개수 (1~5)
+
+class cf_change(BaseModel):                           # 바꿀 항목 하나
+    feature: str                                      # 원래 변수명
+    feature_name_kr: str                              # 화면 이름 (예: 무담보 한도 사용률)
+    current_value: float                              # 지금 값
+    suggested_value: float                            # 제안 값
+    current_display: str                              # 단위 붙인 지금 값 (예: "85%")
+    suggested_display: str                            # 단위 붙인 제안 값 (예: "42%")
+
+class cf_option(BaseModel):                           # 방안 하나 (여러 항목을 함께 바꿈)
+    rank: int                                         # 1부터, 바꾸는 항목이 적은 순
+    changes: List[cf_change]
+    credit_score: int                                 # 바꾼 뒤 예상 결과
+    approval_status: str
+    default_probability: float
+    risk_grade: str
+
+class counterfactual_response(BaseModel):
+    original: predict_response                        # 지금 결과
+    counterfactuals: List[cf_option]                  # 빈 리스트 = 이미 승인 또는 방안 없음
+    varied_features: List[str]                        # 바꿔 본 변수
+    fixed_features: List[str]                         # 바꿀 수 없다고 보고 고정한 변수
+    message: str
