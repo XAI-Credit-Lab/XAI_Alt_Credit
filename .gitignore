@@ -19,3 +19,5 @@ data/processed/결과_구버전.csv
 .venv/
 
 backup/
+models/*.pkl
+artifacts/*.joblib
