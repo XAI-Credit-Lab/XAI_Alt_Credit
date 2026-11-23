@@ -12,13 +12,14 @@ XAI 기반 대안신용평가 시스템 - 신용평가 모델 학습 / 평가 / 
   - 확인: check_tree_explainer()가 같은 입력을 30번 설명해 거절 사유(상위 3개)가
           한 번도 안 바뀌는지, SHAP 합 + base value == 모델 로그오즈인지 검사
           -> 결과는 model_meta_v{버전}.json 의 "shap_check" 에 저장
-  - SHAP 모듈/API에서는 이 파일의 unwrap_model 을 import 해서 사용할 것
+  - API(main.py)에는 같은 함수를 따로 구현해 사용함
+          (이 파일은 mlflow 등 학습용 라이브러리를 불러와, API 환경에서 import 하면 오류가 남)
 
-[실행 옵션] 최종 모델은 v1.2 (class_weight만). SMOTE 비교는 옵션으로 남겨 둠
-  python -m src.models.model                -> v1.2: class_weight만 사용 (실험 3개, 최종)
+[실행 옵션] 최종 모델은 v1.3 (class_weight만, 데이터 정제 반영). SMOTE 비교는 옵션으로 남겨 둠
+  python -m src.models.model                -> v1.3: class_weight만 사용 (실험 3개, 최종)
   python -m src.models.model --with-smote   -> v1.1: class_weight vs SMOTE 비교 (실험 6개, 기록용)
   - 버전별로 모델 pkl, 메타 json, 전처리기 파일명이 달라서 서로 덮어쓰지 않음
-  - 기본 실행(v1.2)은 imbalanced-learn 없이도 실행됨
+  - 기본 실행(v1.3)은 imbalanced-learn 없이도 실행됨
   - --with-smote 결과는 Model Registry에 Staging으로만 등록 (Production을 덮어쓰지 않음)
 
 [최종 모델 선정 기준] Validation AUC -> Train 5-Fold CV AUC 평균
@@ -32,10 +33,10 @@ XAI 기반 대안신용평가 시스템 - 신용평가 모델 학습 / 평가 / 
   3) 불균형 처리 2개 비교  : class_weight='balanced' vs SMOTE
                              (SMOTE는 imblearn Pipeline으로 CV 각 fold 안에서만 적용 -> 누수 없음)
   4) 모델 저장             : 프로젝트 루트 models/ 폴더에 .pkl
-  5) 버전 포함 파일명      : xgboost_v1.0.pkl, lightgbm_v1.0.pkl, logistic_regression_v1.0.pkl
+  5) 버전 포함 파일명      : xgboost_v{버전}.pkl, lightgbm_v{버전}.pkl, logistic_regression_v{버전}.pkl
   [성능 목표]
   - Test AUC-ROC >= 0.78, Test KS >= 0.28, 씬파일러 AUC 향상 >= +0.03, PSI < 0.1
-    -> 실행 마지막에 PASS/FAIL 표로 출력, models/model_meta_v1.0.json 에 저장 (/metrics API용)
+    -> 실행 마지막에 PASS/FAIL 표로 출력, models/model_meta_v{버전}.json 에 저장 (/metrics API용)
   [승인 판정 기준] 추가
   - 승인율 70% (시뮬레이터 add_approval_label의 과거 승인율과 동일)
   - Validation 부도확률의 하위 70% 지점을 approval_cutoff 로 저장
@@ -43,7 +44,7 @@ XAI 기반 대안신용평가 시스템 - 신용평가 모델 학습 / 평가 / 
     -> /fairness 에서도 같은 기준으로 승인 여부를 만들어야 과거 승인 기록과 비교 가능
   - 기존 threshold(F1 최대 지점)는 F1 평가용으로만 남겨 둠
   [MLflow]
-  - 실험(알고리즘 x 불균형 기법) 6개를 각각 run으로 기록: params, metrics(AUC/KS/F1), artifacts(모델 파일)
+  - 실험(알고리즘 x 불균형 기법)을 각각 run으로 기록 (기본 3개, --with-smote 6개): params, metrics(AUC/KS/F1), artifacts(모델 파일)
   - 최종 모델을 Model Registry에 등록하고 Staging/Production 태그 부여
 
 데이터 사용 원칙
@@ -162,7 +163,7 @@ def build_model(algo: str, imbalance: str, y_train: pd.Series):
                              n_jobs=-1, random_state=RANDOM_STATE, verbose=-1)
 
     if imbalance == "smote":
-        # SMOTE를 쓸 때만 import (기본 실행 v1.2 에서는 imbalanced-learn 불필요)
+        # SMOTE를 쓸 때만 import (기본 실행에서는 imbalanced-learn 불필요)
         from imblearn.over_sampling import SMOTE
         from imblearn.pipeline import Pipeline as ImbPipeline
         return ImbPipeline([("smote", SMOTE(random_state=RANDOM_STATE)), ("clf", clf)])
@@ -474,12 +475,12 @@ def main() -> None:
     df = pd.read_csv(args.csv)
     pre = CreditPreprocessor()
     data = pre.process(df)
-    # 전처리기도 버전별 파일로 저장 (예: preprocessor.pkl -> preprocessor_v1.2.pkl)
+    # 전처리기도 버전별 파일로 저장 (예: preprocessor.joblib -> preprocessor_v1.3.joblib)
     pre_path = Path(DEFAULT_SAVE)
     pre_path = pre_path.with_name(f"{pre_path.stem}_v{MODEL_VERSION}{pre_path.suffix}")
     pre.save(pre_path)
 
-    # 2) 6개 실험
+    # 2) 실험 (기본 3개, --with-smote 6개)
     print(f"\n[model] 실험 {len(ALGORITHMS) * len(IMBALANCE_METHODS)}개 "
           f"(알고리즘 {len(ALGORITHMS)} x 불균형 기법 {len(IMBALANCE_METHODS)}, {N_FOLDS}-Fold Stratified CV)")
     results = [run_experiment(a, i, data) for a in ALGORITHMS for i in IMBALANCE_METHODS]
