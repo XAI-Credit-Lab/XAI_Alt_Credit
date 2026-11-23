@@ -1,0 +1,11 @@
+# 대시보드 테마 (참고 레이아웃: 크림색 패널 + 골드 포인트). 프로젝트 루트에서 streamlit run 할 때 적용됨
+[theme]
+base = "light"
+primaryColor = "#d99a2b"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#fcf9f3"
+textColor = "#1f1f1f"
+font = "sans serif"
+
+[server]
+headless = true

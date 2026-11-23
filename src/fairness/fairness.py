@@ -32,6 +32,8 @@ src/fairness/fairness.py
 from __future__ import annotations
 
 import json
+import re
+import os
 import logging
 from functools import lru_cache
 from pathlib import Path
@@ -251,8 +253,22 @@ def fairness_summary(y_true, approved, sens: pd.DataFrame, tag: str = "") -> dic
 # ----------------------------------------------------------------------
 # 6. 저장된 모델·데이터로 실행 (API / CLI / 대시보드 공용)
 # ----------------------------------------------------------------------
+def _version_key(path: Path):
+    """model_meta_v1.10.json > model_meta_v1.2.json 이 되도록 버전을 숫자로 비교 (문자열 정렬은 1.10 < 1.2)"""
+    m = re.search(r"_v([\d.]+)\.json$", path.name)
+    return tuple(int(x) for x in m.group(1).split(".") if x.isdigit()) if m else ()
+
+
 def _latest_meta(model_dir: Path) -> Path:
-    files = sorted(model_dir.glob("model_meta_v*.json"))
+    """사용할 model_meta 파일. 환경변수 MODEL_VERSION(예: 1.2)이 있으면 그 버전, 없으면 가장 높은 버전.
+    ※ API(main.py)가 읽는 메타 버전과 같아야 /fairness 숫자와 /predict 승인 기준이 일치한다."""
+    want = os.getenv("MODEL_VERSION")
+    if want:
+        f = model_dir / f"model_meta_v{want}.json"
+        if not f.exists():
+            raise FileNotFoundError(f"{f} 가 없습니다 (환경변수 MODEL_VERSION={want})")
+        return f
+    files = sorted(model_dir.glob("model_meta_v*.json"), key=_version_key)
     if not files:
         raise FileNotFoundError(f"model_meta_v*.json 이 없습니다: {model_dir}  (python -m src.models.model 먼저 실행)")
     return files[-1]
