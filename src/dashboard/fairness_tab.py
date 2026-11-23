@@ -16,11 +16,18 @@ MSA 구조: 이 파일은 모델 파일(.pkl)이나 src/fairness 모듈, 리포�
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+from src.dashboard import theme  # noqa: E402
 
 API_URL = os.environ.get("API_URL", "http://localhost:8000").rstrip("/")
 
@@ -70,7 +77,8 @@ def _badge(label: str, v, th, kind: str = "di") -> str:
     if v is None:
         return f"❔ {label}: 계산 불가"
     bad = _status(v, th) == "WARNING" if kind == "di" else v > th["eo_threshold"]
-    return f"{'⚠️ 경고' if bad else '✅ 정상'} · {label.replace('~', chr(92) + '~')} {v:.3f}"
+    unit = "배" if kind == "di" else ""
+    return f"{'⚠️ 경고' if bad else '✅ 정상'} · {label.replace('~', chr(92) + '~')} {v:.3f}{unit}"
 
 
 # ----------------------------------------------------------------------
@@ -95,7 +103,7 @@ def _bars(fig, x, before, after, inside: bool = False, fmt: str = "%{y:.3f}"):
                     text=ys, texttemplate=fmt, cliponaxis=False,
                     **(dict(textposition="inside", insidetextanchor="end", textfont=dict(color="white", size=13))
                        if inside else dict(textposition="outside")),
-                    hovertemplate="%{x}<br>" + name + ": %{y:.4f}<extra></extra>")
+                    hovertemplate="%{x}<br>" + name + ": " + fmt + "<extra></extra>")
     return fig
 
 
@@ -103,12 +111,12 @@ def di_chart(before: dict, after: dict, th: dict):
     labels = ["성별 (여성/남성)"] + [f"연령 {k}/{AGE_REF}" for k in before["age_di"]]
     b = [before["di_ratio"]] + list(before["age_di"].values())
     a = [after["di_ratio"]] + list(after["age_di"].values())
-    fig = _bars(go.Figure(), labels, b, a, inside=True)
-    for y, txt in ((th["di_lower"], f"하한 {th['di_lower']}"), (th["di_upper"], f"상한 {th['di_upper']}")):
+    fig = _bars(go.Figure(), labels, b, a, inside=True, fmt="%{y:.3f}배")
+    for y, txt in ((th["di_lower"], f"하한 {th['di_lower']}배"), (th["di_upper"], f"상한 {th['di_upper']}배")):
         fig.add_hline(y=y, line=dict(dash="dash", width=1.5, color="gray"), annotation_text=txt,
                       annotation_position="top left", annotation_font_size=11)
     top = max([v for v in b + a if v is not None] + [th["di_upper"]]) * 1.15
-    _layout(fig, "Disparate Impact Ratio (1.0에 가까울수록 균등)", "DI")
+    _layout(fig, "Disparate Impact Ratio (1.0배에 가까울수록 균등)", "DI (배)")
     fig.update_yaxes(range=[0, top])
     return fig
 
@@ -120,11 +128,13 @@ def eo_chart(before: dict, after: dict, with_age: bool, th: dict):
         labels += ["연령 ΔTPR", "연령 ΔFPR"]
         b += [before["age_equalized_odds_tpr_diff"], before["age_equalized_odds_fpr_diff"]]
         a += [after["age_equalized_odds_tpr_diff"], after["age_equalized_odds_fpr_diff"]]
-    fig = _bars(go.Figure(), labels, b, a)
-    fig.add_hline(y=th["eo_threshold"], line=dict(dash="dash", width=1.5, color="gray"),
-                  annotation_text=f"기준 {th['eo_threshold']}", annotation_position="top left", annotation_font_size=11)
-    _layout(fig, "Equalized Odds 차이 (0에 가까울수록 균등)", "집단 간 차이")
-    fig.update_yaxes(range=[0, max([v for v in b + a if v is not None] + [th["eo_threshold"]]) * 1.2])
+    b, a = [None if v is None else v * 100 for v in b], [None if v is None else v * 100 for v in a]   # 비율 차이 -> %p
+    thr = th["eo_threshold"] * 100
+    fig = _bars(go.Figure(), labels, b, a, fmt="%{y:.1f}%p")
+    fig.add_hline(y=thr, line=dict(dash="dash", width=1.5, color="gray"),
+                  annotation_text=f"기준 {thr:.0f}%p", annotation_position="top left", annotation_font_size=11)
+    _layout(fig, "Equalized Odds 차이 (0%p에 가까울수록 균등)", "집단 간 차이 (%p)")
+    fig.update_yaxes(range=[0, max([v for v in b + a if v is not None] + [thr]) * 1.2])
     return fig
 
 
@@ -144,7 +154,7 @@ def approval_chart(before: dict, after: dict, target: float | None):
         fig.add_hline(y=target, line=dict(dash="dash", width=1.5, color="gray"),
                       annotation_text=f"전체 목표 승인율 {target:.0%}", annotation_position="top left",
                       annotation_font_size=11)
-    _layout(fig, "집단별 승인율 (집단 간 막대 높이가 같을수록 균등)", "승인율")
+    _layout(fig, "집단별 승인율 (집단 간 막대 높이가 같을수록 균등)", "승인율 (%)")
     fig.update_yaxes(range=[0, 1.05], tickformat=".0%")
     return fig
 
@@ -153,7 +163,12 @@ def approval_chart(before: dict, after: dict, target: float | None):
 # 화면
 # ----------------------------------------------------------------------
 def render_fairness_tab() -> None:
-    st.subheader("공정성 검증")
+    with theme.panel("fair"):
+        _render_body()
+
+
+def _render_body() -> None:
+    theme.section("공정성 검증")
     api = fetch(API_URL, "/fairness/mitigation")
     det = fetch(API_URL, "/fairness/detail")
 
@@ -192,10 +207,12 @@ def render_fairness_tab() -> None:
 
     # --- 핵심 수치 -----------------------------------------------------
     k1, k2, k3 = st.columns(3)
-    for col, label, key in ((k1, "성별 DI", "di_ratio"), (k2, "성별 ΔTPR", "equalized_odds_tpr_diff"),
-                            (k3, "성별 ΔFPR", "equalized_odds_fpr_diff")):
-        col.metric(label, f"{after[key]:.3f}", delta=f"{after[key] - before[key]:+.3f} (완화 전 {before[key]:.3f})",
-                   delta_color="off")
+    col, label, key = k1, "성별 DI (배)", "di_ratio"
+    col.metric(label, f"{after[key]:.3f}배", delta=f"{after[key] - before[key]:+.3f}배 (완화 전 {before[key]:.3f}배)",
+               delta_color="off")
+    for col, label, key in ((k2, "성별 ΔTPR (%p)", "equalized_odds_tpr_diff"), (k3, "성별 ΔFPR (%p)", "equalized_odds_fpr_diff")):
+        col.metric(label, f"{after[key] * 100:.1f}%p",
+                   delta=f"{(after[key] - before[key]) * 100:+.1f}%p (완화 전 {before[key] * 100:.1f}%p)", delta_color="off")
 
     # --- 차트 ---------------------------------------------------------
     if det:
@@ -211,26 +228,28 @@ def render_fairness_tab() -> None:
     st.markdown("##### 완화의 비용")
     info = det["info"]
     m1, m2, m3 = st.columns(3)
-    m1.metric("전체 승인율", f"{after['approval_rate']:.2%}", delta=f"{after['approval_rate'] - before['approval_rate']:+.2%}p",
-              delta_color="off")
-    m2.metric("승인자 부도율", f"{after['approved_default_rate']:.2%}",
-              delta=f"{after['approved_default_rate'] - before['approved_default_rate']:+.2%}p", delta_color="off",
+    m1.metric("전체 승인율 (%)", f"{after['approval_rate']:.2%}",
+              delta=f"{(after['approval_rate'] - before['approval_rate']) * 100:+.2f}%p", delta_color="off")
+    m2.metric("승인자 부도율 (%)", f"{after['approved_default_rate']:.2%}",
+              delta=f"{(after['approved_default_rate'] - before['approved_default_rate']) * 100:+.2f}%p", delta_color="off",
               help="승인된 사람 중 실제로 부도 난 비율. 낮을수록 좋음")
-    m3.metric("Test AUC", f"{info['test_auc']:.4f}", help="기준값만 바꾸고 점수는 그대로라 완화 전/후가 같음")
+    m3.metric("Test AUC (0~1)", f"{info['test_auc']:.4f}", help="기준값만 바꾸고 점수는 그대로라 완화 전/후가 같음")
 
     # --- 집단표 -------------------------------------------------------
     st.markdown("##### 집단별 표")
     which = st.radio("대상", ["완화 전", "완화 후"], horizontal=True, key="fair_tbl")
     d = before if which == "완화 전" else after
-    ren = {"group": "집단", "n": "인원", "n_default": "부도 건수", "approval_rate": "승인율",
-           "tpr": "TPR (정상 중 승인)", "fpr": "FPR (부도 중 승인)"}
+    pct_cols = ("승인율 (%)", "TPR · 정상 중 승인 (%)", "FPR · 부도 중 승인 (%)")
+    ren = {"group": "집단", "n": "인원 (명)", "n_default": "부도 건수 (건)", "approval_rate": pct_cols[0],
+           "tpr": pct_cols[1], "fpr": pct_cols[2]}
     for title, key in (("성별", "gender_table"), ("연령대", "age_table")):
         t = pd.DataFrame(d[key]).rename(columns=ren)
+        for c in pct_cols:                                   # 비율(0~1) -> 퍼센트
+            t[c] = t[c] * 100
         st.markdown(f"**{title}**")
         st.dataframe(t, hide_index=True, **STRETCH,
-                     column_config={c: st.column_config.NumberColumn(format="%.4f") for c in
-                                    ("승인율", "TPR (정상 중 승인)", "FPR (부도 중 승인)")})
-        small = t.loc[t["부도 건수"] < th["min_defaults_per_group"], "집단"].tolist()
+                     column_config={c: st.column_config.NumberColumn(format="%.2f%%") for c in pct_cols})
+        small = t.loc[t["부도 건수 (건)"] < th["min_defaults_per_group"], "집단"].tolist()
         if small:
             st.caption(f"⚠️ 부도 {th['min_defaults_per_group']}건 미만 집단: {small} — 차이 값이 불안정할 수 있음")
 
@@ -239,14 +258,16 @@ def render_fairness_tab() -> None:
         st.markdown(
             f"**{info['mitigation']}** — {' × '.join(info['mitigation_by'])} 집단마다 Validation 부도확률의 "
             f"하위 {info['target_approval_rate']:.0%} 지점을 승인 기준값으로 사용합니다. "
-            f"(완화 전: 모든 집단에 {info['approval_cutoff']:.4f} 하나)")
-        st.dataframe(pd.DataFrame({"집단": list(info["group_cutoffs"]), "승인 기준값": list(info["group_cutoffs"].values())}),
-                     hide_index=True, **STRETCH)
+            f"(완화 전: 모든 집단에 부도확률 {info['approval_cutoff'] * 100:.2f}% 하나)")
+        st.dataframe(pd.DataFrame({"집단": list(info["group_cutoffs"]),
+                                   "승인 기준값 · 부도확률 (%)": [v * 100 for v in info["group_cutoffs"].values()]}),
+                     hide_index=True, **STRETCH,
+                     column_config={"승인 기준값 · 부도확률 (%)": st.column_config.NumberColumn(format="%.2f%%")})
     with st.expander("정의와 한계"):
         st.markdown(
             f"- **승인 규칙**: {info['approval_rule']}\n"
             "- **TPR** = P(승인 | 실제 정상), **FPR** = P(승인 | 실제 부도). 성별 gender=1 이 여성.\n"
-            f"- **모델**: {info['model']} v{info['model_version']} (학습 {info['trained_at']}), Test {info['n_test']:,}행\n"
+            f"- **모델**: {info['model']} v{info['model_version']} (학습 {info['trained_at']}), Test {info['n_test']:,}명\n"
             "- 성별·편향은 시뮬레이터가 가정한 값으로 만든 합성 데이터이며 실제 대출 데이터의 결과가 아닙니다.\n"
             "- 집단별 기준값은 보호 속성을 판정에 쓰므로, 실제 서비스 적용 여부는 법적·정책적 검토가 필요합니다.")
 

@@ -204,6 +204,36 @@ def test_cutoffs_come_from_validation_only(result):
 
 
 @needs_artifacts
+def test_validation_and_test_rows_do_not_overlap():
+    """기준값을 정하는 데이터(Validation)와 평가 데이터(Test)는 같은 행을 공유하면 안 된다"""
+    val_idx = pd.read_csv(F.DATA_DIR / "X_val.csv", index_col=0).index
+    test_idx = pd.read_csv(F.DATA_DIR / "X_test.csv", index_col=0).index
+    assert len(val_idx) > 0 and len(test_idx) > 0
+    assert val_idx.is_unique and test_idx.is_unique
+    assert len(val_idx.intersection(test_idx)) == 0
+
+
+@needs_artifacts
+def test_changing_test_data_does_not_change_cutoffs(result, tmp_path):
+    """Test 세트를 통째로 바꿔도(라벨 반전, 행 줄이기) 집단별 기준값은 그대로여야 한다 = Test 누수 없음"""
+    import shutil
+    for k in ("X", "y", "sensitive"):
+        shutil.copy(F.DATA_DIR / f"{k}_val.csv", tmp_path / f"{k}_val.csv")
+    X = pd.read_csv(F.DATA_DIR / "X_test.csv", index_col=0).iloc[:5000]
+    y = pd.read_csv(F.DATA_DIR / "y_test.csv", index_col=0).iloc[:5000]
+    s = pd.read_csv(F.DATA_DIR / "sensitive_test.csv", index_col=0).iloc[:5000]
+    y.iloc[:, 0] = 1 - y.iloc[:, 0]          # 라벨을 일부러 뒤집음
+    X.to_csv(tmp_path / "X_test.csv")
+    y.to_csv(tmp_path / "y_test.csv")
+    s.to_csv(tmp_path / "sensitive_test.csv")
+
+    changed = F.run_fairness(data_dir=tmp_path)
+    assert changed["info"]["n_test"] == 5000                      # 바뀐 Test가 실제로 쓰였고
+    assert changed["info"]["group_cutoffs"] == pytest.approx(result["info"]["group_cutoffs"])  # 기준값은 동일
+    assert changed["info"]["approval_cutoff"] == result["info"]["approval_cutoff"]
+
+
+@needs_artifacts
 def test_detail_is_strict_json_serializable():
     """/fairness/detail 은 NaN 이 있으면 FastAPI 가 500 을 낸다 -> NaN 없이 엄격한 JSON 이어야 함"""
     d = F.model_fairness_detail()
@@ -225,3 +255,13 @@ def test_comparison_table_for_report(result):
     row = t.set_index("지표").loc["성별 DI (여/남)"]
     assert row["완화 전"] == pytest.approx(result["non_miti"]["di_ratio"])
     assert row["완화 후"] == pytest.approx(result["miti"]["di_ratio"])
+
+
+def test_latest_meta_uses_numeric_version_order(tmp_path, monkeypatch):
+    """v1.10 이 v1.2 보다 최신이어야 한다 (문자열 정렬이면 반대로 됨). MODEL_VERSION 환경변수로 고정도 가능"""
+    for v in ("1.1", "1.2", "1.10"):
+        (tmp_path / f"model_meta_v{v}.json").write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("MODEL_VERSION", raising=False)
+    assert F._latest_meta(tmp_path).name == "model_meta_v1.10.json"
+    monkeypatch.setenv("MODEL_VERSION", "1.2")
+    assert F._latest_meta(tmp_path).name == "model_meta_v1.2.json"
