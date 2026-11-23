@@ -4,6 +4,12 @@
 
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Any, List, Dict, Optional
+from src.data.feature_spec import field_bounds as fb
+from src.data.preprocessor import DEBT_RATIO_MAX, REVOLVING_MAX
+
+# feature_spec의 입력 상한과 전처리기의 결측 처리 기준이 같아야 함 (다르면 서버 시작 시 바로 알림)
+assert fb("DebtRatio")["le"] == DEBT_RATIO_MAX, "feature_spec DebtRatio max != preprocessor DEBT_RATIO_MAX"
+assert fb("RevolvingUtilizationOfUnsecuredLines")["le"] == REVOLVING_MAX, "feature_spec Revolving max != preprocessor REVOLVING_MAX"
 
 # 1. (GET) 상태, 사용된 머신러닝 모델, 접속 시간 응답
 class health_request(BaseModel):
@@ -20,29 +26,30 @@ class predict_request(BaseModel):
     # extra="forbid": 정의되지 않은 변수 입력 거부. 사용자 입력 중 오타(ex) "MonthlyIncom": 2500 ) 있으면 에러
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    # 기존 금융 변수 
-    RevolvingUtilizationOfUnsecuredLines: float = Field(ge=0) 
-    DebtRatio: float = Field(ge=0) 
-    MonthlyIncome: Optional[float] = Field(None, ge=0) # 월 소득 - 입력 선택 (원본 데이터셋에 결측 있음) - 입력 없으면 None
-    NumberOfOpenCreditLinesAndLoans: int = Field(ge=0) 
-    NumberRealEstateLoansOrLines: int = Field(ge=0) 
-    NumberOfDependents: Optional[int] = Field(None, ge=0) # 부양 가족 수 - 입력 선택 (원본 데이터셋에 결측 있음) - 입력 없으면 None
-    card_history_months: int = Field(ge=0, le = 360)  
+    # 기존 금융 변수 (입력 범위는 feature_spec.py 한 곳에서 관리)
+    RevolvingUtilizationOfUnsecuredLines: float = Field(**fb("RevolvingUtilizationOfUnsecuredLines"))
+    # 월 소득이 미입력이거나 0~1이면 전처리기에서 반영되지 않음 (중앙값 대체)
+    DebtRatio: float = Field(**fb("DebtRatio"))
+    MonthlyIncome: Optional[float] = Field(None, **fb("MonthlyIncome"))
+    NumberOfOpenCreditLinesAndLoans: int = Field(**fb("NumberOfOpenCreditLinesAndLoans"))
+    NumberRealEstateLoansOrLines: int = Field(**fb("NumberRealEstateLoansOrLines"))
+    NumberOfDependents: Optional[int] = Field(None, **fb("NumberOfDependents"))
+    card_history_months: int = Field(**fb("card_history_months"))
 
-    # 기존 금융 변수-연체 관련-입력 선택
-    # 컬럼 이름에 '-'가 있어 파이썬 변수명으로 못 씀 -> alias로 원래 이름 연결
-    # 최근 2년간 연체 횟수, 최대값: (365 * 2) / 30, (365 * 2) / 60
-    past_due_30_59: Optional[int] = Field(None, alias="NumberOfTime30-59DaysPastDueNotWorse", ge=0, le = 24)
-    past_due_60_89: Optional[int] = Field(None, alias="NumberOfTime60-89DaysPastDueNotWorse", ge=0, le = 12)
-    # 위 두 연체와 달리 '최근' 2년 기준이 아님, 원본 데이터셋에서의 이상치 제외 최대값 반영
-    past_due_90: Optional[int] = Field(None, alias="NumberOfTimes90DaysLate", ge=0, le = 17) 
+    # 연체 관련 (입력 선택). 컬럼 이름에 '-'가 있어 alias로 원래 이름 연결
+    past_due_30_59: Optional[int] = Field(None, alias="NumberOfTime30-59DaysPastDueNotWorse",
+                                          **fb("NumberOfTime30-59DaysPastDueNotWorse"))
+    past_due_60_89: Optional[int] = Field(None, alias="NumberOfTime60-89DaysPastDueNotWorse",
+                                          **fb("NumberOfTime60-89DaysPastDueNotWorse"))
+    past_due_90: Optional[int] = Field(None, alias="NumberOfTimes90DaysLate",
+                                       **fb("NumberOfTimes90DaysLate"))
 
     # 대안 변수
-    telecom_payment_rate: float = Field(ge=0, le=1)
-    utility_payment_rate: float = Field(ge=0, le=1)
-    spending_consistency: float = Field(ge=0, le=100)
-    regular_payment_count: int = Field(ge=0)
-    app_login_frequency: int = Field(ge=0)
+    telecom_payment_rate: float = Field(**fb("telecom_payment_rate"))
+    utility_payment_rate: float = Field(**fb("utility_payment_rate"))
+    spending_consistency: float = Field(**fb("spending_consistency"))
+    regular_payment_count: int = Field(**fb("regular_payment_count"))
+    app_login_frequency: int = Field(**fb("app_login_frequency"))
 
     # 씬파일러 여부 (0/1)
     # is_thin_filer: int = Field(ge=0, le=1) -> 서버에서 계산 후 입력
@@ -57,16 +64,22 @@ class predict_response(BaseModel):
 # 3. (POST) XAI, 호출 시 거절 사유 top 5가 json 형식으로 반환
 class explain_request(predict_request): # 입력값-/predict입력값 상속
     pass
-class reason(BaseModel): # 거절 사유
-    feature : str # 변수명
-    feature_label : str # 화면에 보여줄 이름 (예: 부채 비율)
-    current_value : Optional[float]   # 미입력이면 null
-    shap_contribution : float # shap 기여도
-    explanation : str # 자연어 설명
+class reason(BaseModel):          # 거절 사유 (feature_spec.build_rejection_reasons 형식)
+    # 기본값 None: 값이 아직 안 채워져도 오류가 나지 않고, 기존 대시보드에도 영향 없음
+    rank: Optional[int] = None                # 순위 (1부터)
+    feature: str                              # 원래 변수명
+    feature_name_kr: Optional[str] = None     # 화면에 보여줄 이름 (feature_spec 기준, 예: 부채 비율)
+    feature_label: Optional[str] = None       # 이전 필드 이름 (호환용, feature_name_kr과 같은 값)
+    current_value: Optional[float] = None     # 입력값, 미입력이면 null
+    reference_value: Optional[float] = None   # 비교 기준 (Train 중앙값)
+    shap_contribution: float                  # SHAP 기여도 (+: 부도 위험을 높이는 방향)
+    explanation: str                          # 자연어 설명
+
 class explain_response(BaseModel):
     approval_status: str
-    rejection_reasons : List[reason] # 거절 사유 5개
-    shap_values : dict[str, float]
+    rejection_reasons: List[reason]
+    total_rejection_factors: Optional[int] = None   # 기여도가 +인 전체 변수 수
+    shap_values: Dict[str, float]
 
 
 # 3-1. (POST) XAI 이미지: 거절 사유 top 5, SHAP Waterfall, Summary, Dependence plot 이미지 반환
@@ -74,9 +87,10 @@ class explain_response(BaseModel):
 class explain_plots_response(BaseModel):
     approval_status: str
     rejection_reasons: List[reason]
+    total_rejection_factors: Optional[int] = None
     waterfall_png: Optional[str] = None
-    summary_png : Optional[str] = None
-    dependence_png : Optional[Dict[str, str]] = None
+    summary_png: Optional[str] = None
+    dependence_png: Optional[Dict[str, str]] = None
 
 
 # 4. (GET) 공정성 검증(non-mitigation) -> DI ratio, tpr, fpr
@@ -105,7 +119,7 @@ class fairness_detail_response(BaseModel):
 
 
 # 6. (GET) 모델 정확도
-# models/model_meta_v1.0.json에서 값 로드
+# 최신 버전 메타에서 값 로드
 class metrics_request(BaseModel): 
     pass
 class metrics_response(BaseModel):
