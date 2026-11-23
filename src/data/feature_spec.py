@@ -97,12 +97,12 @@ FEATURE_SPEC: dict[str, dict] = {
     },
     # ---------------- 연체 (입력 선택) ----------------
     "NumberOfTime30-59DaysPastDueNotWorse": {
-        "label": "30~59일 연체 횟수", "unit": "최근 2년, 회", "kind": "count",
+        "label": "30-59일 연체 횟수", "unit": "최근 2년, 회", "kind": "count",
         "min": 0, "max": 24, "step": 1, "fmt": "{:,.0f}회",
         "help": "최근 2년 동안 30~59일 연체한 횟수 (그보다 오래 연체한 건은 제외)",
     },
     "NumberOfTime60-89DaysPastDueNotWorse": {
-        "label": "60~89일 연체 횟수", "unit": "최근 2년, 회", "kind": "count",
+        "label": "60-89일 연체 횟수", "unit": "최근 2년, 회", "kind": "count",
         "min": 0, "max": 12, "step": 1, "fmt": "{:,.0f}회",
         "help": "최근 2년 동안 60~89일 연체한 횟수 (그보다 오래 연체한 건은 제외)",
     },

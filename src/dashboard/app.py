@@ -180,6 +180,84 @@ def _print_button():
         components.html(_PRINT_HTML, height=44)
 
 
+# ----------------------------------------------------------------------
+# 승인을 위한 개선 방안 (반사실적 설명, POST /counterfactual)
+# ----------------------------------------------------------------------
+CF_COUNT_OPTIONS = [1, 2, 3, 4, 5]
+
+
+def _cf_value(feature: str, display: str, value: float) -> tuple[str, str]:
+    """(표시 값, 보조 줄). 금액(월 소득)은 달러 + 원화, 나머지는 API가 단위를 붙여 준 문자열 그대로"""
+    if feature == "MonthlyIncome":
+        return f"{units.usd(value)}/월", f"원화 : {units.krw(value)}"
+    return display, ""
+
+
+def _cf_cards(res: dict) -> None:
+    opts = res.get("counterfactuals") or []
+    if not opts:
+        st.info(res.get("message") or "제안할 방안이 없습니다.")
+        return
+    st.caption(res.get("message", ""))
+    o_score = res["original"]["credit_score"]
+    for row_start in range(0, len(opts), 3):               # 한 줄에 최대 3개
+        row = opts[row_start:row_start + 3]
+        for col, o in zip(st.columns(3, gap="medium"), row):
+            with col:
+                changes = []
+                for ch in o["changes"]:
+                    a, a_sub = _cf_value(ch["feature"], ch["current_display"], ch["current_value"])
+                    b, b_sub = _cf_value(ch["feature"], ch["suggested_display"], ch["suggested_value"])
+                    sub = f"{a_sub} → {b_sub.removeprefix('원화 : ')}" if a_sub else ""
+                    changes.append((ch["feature_name_kr"], a, b, sub))
+                diff = o["credit_score"] - o_score
+                result = (f"예상 신용 점수 <b>{o['credit_score']}점</b> ({diff:+d}점) · {o['risk_grade']}등급<br>"
+                          f"예상 부도 확률 {units.pct(o['default_probability'])} · ✅ 승인 예상")
+                theme.option_card(f"방안 {o['rank']}", f"{len(o['changes'])}개 항목 변경", changes, result)
+    fixed, varied = res.get("fixed_features") or [], res.get("varied_features") or []
+    with st.expander("어떤 항목을 바꿔 봤고, 어떤 항목은 고정했나요?"):
+        st.markdown("**바꿔 본 항목**: " + (", ".join(label(f) for f in varied) or "없음"))
+        st.markdown("**고정한 항목**: " + (", ".join(label(f) for f in fixed) or "없음"))
+        st.caption("연체 기록, 카드 이용 기간처럼 고객이 바로 바꿀 수 없는 항목과, 앱 로그인 횟수처럼 "
+                   "신용 개선 행동으로 보기 어려운 항목은 고정했습니다. 월 소득은 현재의 1.3배까지, "
+                   "소비 일관성은 30점까지만 올려 보도록 제한했습니다.")
+
+
+def _cf_panel(p: dict, pred: dict | None) -> None:
+    with theme.panel("cf"):
+        theme.section("승인을 위한 개선 방안 (반사실적 설명)")
+        if not pred:
+            st.caption("먼저 [심사 실행]으로 결과를 확인하세요.")
+            return
+        if pred["approval_status"] == "APPROVED":
+            st.info("이미 승인 기준을 넘은 고객입니다. 개선 방안이 필요하지 않습니다.")
+            return
+        st.caption("거절된 고객이 무엇을 얼마나 바꾸면 승인 기준을 넘을지, 모델로 계산해 보여 줍니다. "
+                   "실제 승인을 보장하지 않습니다.")
+        c1, c2 = st.columns([1, 3], vertical_alignment="bottom")
+        with c1:
+            n = st.selectbox("제안 개수 (단위: 개)", CF_COUNT_OPTIONS, index=2, key="cf_n")
+        with c2:
+            run = st.button("개선 방안 찾기", key="run_cf")
+        if run:
+            with st.spinner("방안을 찾는 중입니다 (수 초 걸릴 수 있습니다)"):
+                r, err = api_post("/counterfactual", {**p, "total_cfs": int(n)})
+            if err:
+                st.session_state.pop("cf", None)
+                if "404" in err:      # FastAPI 브랜치(반사실적 설명)가 아직 서버에 반영되지 않은 경우
+                    err = "이 API 서버에는 /counterfactual 기능이 없습니다. 최신 FastAPI 코드로 서버를 다시 실행하세요."
+                st.error(err)
+                return
+            st.session_state["cf"] = {"res": r, "payload": dict(p)}
+        saved = st.session_state.get("cf")
+        if not saved:
+            return
+        if saved["payload"] != p:
+            st.warning("입력값이 바뀌었습니다. [개선 방안 찾기]를 다시 눌러 주세요.")
+            return
+        _cf_cards(saved["res"])
+
+
 def tab_predict(p: dict):
     res = st.session_state.get("predict")
     left, right = st.columns([2.1, 1], gap="medium")
@@ -242,6 +320,19 @@ def tab_predict(p: dict):
             f"<tr><td><span style='color:#2b2b2b'>●</span></td><td>부동산 대출</td><td><b>{n_re}건</b></td></tr>"
             f"<tr><td><span style='color:#8a8f98'>●</span></td><td>부양 가족</td><td><b>{p.get('NumberOfDependents', '미입력')}"
             f"{'명' if 'NumberOfDependents' in p else ''}</b></td></tr></table>", unsafe_allow_html=True)
+
+    _cf_panel(p, res)
+
+
+_KIND_UNIT = {"ratio": "비율 (1 = 100%)", "score": "점", "amount": "달러", "count": ""}
+
+
+def _axis_unit(feature: str) -> str:
+    """그림 속 값의 단위 (SHAP 그림 자체에는 단위가 적히지 않아 화면에서 안내)"""
+    s = FEATURE_SPEC.get(feature, {})
+    if s.get("kind") == "count":
+        return s.get("unit", "").split(",")[-1].strip() or "개"
+    return _KIND_UNIT.get(s.get("kind"), "")
 
 
 # ----------------------------------------------------------------------
@@ -307,6 +398,7 @@ def tab_explain(p: dict):
                     img = _png(b64)
                     if img:
                         st.markdown(f"**Dependence plot** - {label(feat)}")
+                        st.caption(f"가로축 단위: {_axis_unit(feat)} · 세로축: SHAP 값 (log-odds, 단위 없음)")
                         st.image(img, **STRETCH)
 
         shap_vals = res.get("shap_values") or {}
