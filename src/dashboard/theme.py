@@ -36,6 +36,17 @@ CSS = f"""
 .rp-ok {{ background:#e7f4ea; color:#1d6b34; }} .rp-no {{ background:#fdeaea; color:#a12626; }}
 .rp-unit {{ font-size:.8rem; color:#555; }}
 .rp-legend td {{ padding:2px 6px; font-size:.95rem; }}
+.rp-opt {{ background:#fff; border-radius:6px; padding:14px 16px 12px 16px; margin:0 0 14px 0; box-shadow:0 2px 6px rgba(0,0,0,.12); border-top:3px solid {GOLD}; }}
+.rp-opt-h {{ font-weight:700; font-size:1.02rem; color:{INK}; margin:0 0 8px 0; }}
+.rp-opt-h span {{ font-weight:400; font-size:.82rem; color:#666; margin-left:6px; }}
+.rp-chg {{ padding:6px 0; border-top:1px dashed #e6dfcf; }}
+.rp-chg:first-of-type {{ border-top:0; }}
+.rp-chg-name {{ font-size:.84rem; color:#555; }}
+.rp-chg-val {{ font-size:1.12rem; font-weight:700; color:{INK}; }}
+.rp-chg-val i {{ font-style:normal; color:{GOLD_DARK}; padding:0 6px; }}
+.rp-chg small {{ display:block; font-size:.76rem; color:#7a7a7a; }}
+.rp-opt-res {{ margin-top:8px; padding-top:8px; border-top:1px solid #efe6d2; font-size:.88rem; color:#333; }}
+.rp-opt-res b {{ color:#1d6b34; }}
 .rp-foot {{ text-align:center; font-size:.88rem; color:#333; border-top:1px solid #555; margin-top:18px; padding-top:8px; }}
 </style>
 """
@@ -71,6 +82,17 @@ def factor_card(value: str, label: str, sub: str = "") -> None:
     """값(굵게) + 이름 + 보조 줄(예: 원화 표기)"""
     st.markdown(f'<div class="rp-card"><b>{html.escape(value)}</b><span>{html.escape(label)}</span>'
                 + (f'<small>{html.escape(sub)}</small>' if sub else "") + '</div>', unsafe_allow_html=True)
+
+
+def option_card(title: str, tag: str, changes: list[tuple[str, str, str, str]], result: str) -> None:
+    """반사실적 설명 방안 카드. changes = [(항목 이름, 지금 값, 제안 값, 보조 줄(원화 등))]"""
+    rows = "".join(
+        f'<div class="rp-chg"><div class="rp-chg-name">{html.escape(n)}</div>'
+        f'<div class="rp-chg-val">{html.escape(a)}<i>→</i>{html.escape(b)}</div>'
+        + (f'<small>{html.escape(sub)}</small>' if sub else "") + '</div>'
+        for n, a, b, sub in changes)
+    st.markdown(f'<div class="rp-opt"><div class="rp-opt-h">{html.escape(title)}<span>{html.escape(tag)}</span></div>'
+                f'{rows}<div class="rp-opt-res">{result}</div></div>', unsafe_allow_html=True)
 
 
 def pill(text: str, ok: bool) -> None:

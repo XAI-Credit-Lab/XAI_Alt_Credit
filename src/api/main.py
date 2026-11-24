@@ -1,6 +1,8 @@
 # src/api/main.py
 # ※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다.
 
+# 반사실적 설명 엔드포인트 추가
+
 from fastapi import FastAPI, APIRouter, HTTPException
 from src.api import schema
 from contextlib import asynccontextmanager
@@ -12,7 +14,7 @@ import pandas as pd
 
 from src.data.preprocessor import PROJECT_ROOT, DEFAULT_SAVE, VALID_INCOME_MIN, CreditPreprocessor
 from src.data.simulator import is_thin_filer # 사용자 입력에 is_thin_filer feature 추가 용도
-from src.data.feature_spec import format_value
+from src.data.feature_spec import format_value, label, FEATURE_SPEC
 
 from datetime import datetime, timezone, timedelta
 import threading
@@ -107,6 +109,27 @@ async def lifespan(app: FastAPI):
         exclude_from_reasons = ("is_thin_filer", "missingindicator_", "past_due_code_flag")
     )
 
+    # 반사실적 설명용 DiCE 데이터 - 서버 시작 시 한 번만 (실패해도 나머지 API는 동작)
+    try:
+        import dice_ml   # 여기서만 import: dice-ml이 없어도 서버 전체가 멈추지 않도록
+        proc = PROJECT_ROOT / "data" / "processed"
+        cf_cols = [c for c in art["raw_cols"] if c in schema_cols]   # 사용자가 입력하는 컬럼만 (is_thin_filer 제외)
+        df = _cf_clean(pd.read_csv(proc / "raw_train.csv", index_col=0)[cf_cols], pre.medians_)
+        # 제안 상한: 입력 상한이 없는 변수(소득·건수)는 학습 데이터 99% 분위수까지
+        art["cf_upper"] = {c: FEATURE_SPEC[c]["max"] if FEATURE_SPEC[c].get("max") is not None
+                              else float(df[c].quantile(0.99)) for c in cf_cols}
+        df[CF_OUTCOME] = pd.read_csv(proc / "y_train.csv", index_col=0).iloc[:, 0].astype(int).values
+        art["cf_cols"] = cf_cols
+        # DiCE는 자릿수를 데이터에서 추측(최빈값 기준)해서 납부율이 0.1 단위로 나오고 1.1처럼 범위를 넘을 수 있음
+        # -> 변수 종류별 자릿수를 직접 지정
+        precision = {c: CF_PRECISION.get(FEATURE_SPEC[c].get("kind"), 2) for c in cf_cols}
+        art["cf_data"] = dice_ml.Data(dataframe=df, continuous_features=cf_cols, outcome_name=CF_OUTCOME,
+                                      continuous_features_precision=precision)
+    except Exception as e:
+        print(f"[api] 경고: 반사실적 설명 준비 실패 — /counterfactual 사용 불가: {e}")
+        art["cf_data"] = None
+
+
     # 공정성 지표
     try:
         non_miti, miti = model_fairness()
@@ -128,17 +151,17 @@ router = APIRouter() # 엔드포인트 라우트
 
 
 
-# 사용자 입력을 모델이 학습 때 본 것과 똑같은 형태로 바꿔 주는 함수
-# 결과: 모델에 바로 넣을 수 있는 전처리된 DataFrame
-def to_features(req: schema.predict_request) -> pd.DataFrame: # 결과: pd.DataFrame(타입 힌트)
-    raw = pd.DataFrame([req.model_dump(by_alias=True)])   # schema객체 -> 딕셔너리 -> 1행짜리 DataFrame
+# 원본 입력 DataFrame(여러 행 가능)을 모델이 학습 때 본 것과 똑같은 형태로 바꿔 주는 함수
+# /counterfactual(DiCE)이 후보 수백 개를 한꺼번에 예측할 때도 사용
+def raw_to_features(raw: pd.DataFrame) -> pd.DataFrame:
+    raw = raw.reindex(columns=art["raw_cols"])
+    raw[art["num_cols"]] = raw[art["num_cols"]].apply(pd.to_numeric, errors="coerce")
+    raw["is_thin_filer"] = is_thin_filer(raw).astype(int)   # 행마다 다시 계산
+    return art["pre"].transform(raw)
 
-    # 컬럼을 전처리기 기준으로 맞춤(순서 정렬, 사용자 입력에 있는데 전처리기에 없는 컬럼 버림, 전처리기에 있는데 사용자 입력에 없는 컬럼 NaN)
-    raw = raw.reindex(columns=art["raw_cols"])  
-              
-    raw[art["num_cols"]] = raw[art["num_cols"]].apply(pd.to_numeric, errors="coerce")  # None(숫자로 못 바꿈, 에러) -> NaN, float
-    raw["is_thin_filer"] = is_thin_filer(raw).astype(int) # is_thin_filer: 시뮬레이터 규칙대로 계산
-    return art["pre"].transform(raw)  #preprocessor.py의 transform(): 96/98 결측화, 상한, 대체, 스케일, 원-핫
+# 사용자 입력(schema 객체) 1명 -> 모델에 바로 넣을 수 있는 전처리된 DataFrame
+def to_features(req: schema.predict_request) -> pd.DataFrame:
+    return raw_to_features(pd.DataFrame([req.model_dump(by_alias=True)]))
 
 # 소득이 미입력이면 deptratio를 중앙값으로 대체되었다고 안내
 def display_values(req: schema.predict_request) -> dict:
@@ -157,9 +180,8 @@ def note_unused_debt_ratio(data: schema.predict_request, raw_input: dict, reason
                 r["explanation"] = (f"월 소득이 없어 입력한 부채 비율을 반영하지 않고 중앙값({ref})으로 계산했습니다 "
                                     f"(기여도: {r['shap_contribution']:+.3f})")
 
-# 모델 예측 함수 - /predict, /explain 공통 사용
-def predict_result(X) -> dict:
-    p = float(art["model"].predict_proba(X)[:, 1][0]) # 사용자 입력 모델 예측 결과
+# 부도 확률 p -> 신용 점수, 승인 여부, 등급 (/predict, /explain, /counterfactual 공통)
+def result_from_p(p: float) -> dict:
     bm = art["meta"]["best_model"]                    # 사용된 모델 정보
     return {
         "credit_score": int(round((1 - p) * 1000)),
@@ -167,6 +189,73 @@ def predict_result(X) -> dict:
         "default_probability": round(p, 4),
         "risk_grade": bm["grade_labels"][int(np.searchsorted(bm["grade_cutoffs"], p, side="left"))]
     }
+
+# 모델 예측 함수 - /predict, /explain 공통 사용
+def predict_result(X) -> dict:
+    return result_from_p(float(art["model"].predict_proba(X)[:, 1][0]))
+
+#================================================================
+# 반사실적 설명(DiCE)용 설정과 도우미
+#================================================================
+CF_OUTCOME = "target"   # DiCE 내부용 결과 컬럼 이름
+
+# 바꿀 수 있는 변수와 방향 ("down": 줄이기만, "up": 늘리기만, "both": 양쪽)
+# 목록에 없는 변수는 고정: 카드 이용 기간(시간이 지나야 늘어남), 연체 기록(지울 수 없음), 부양 가족 수, 부동산 대출 수
+CF_ACTIONABLE = {
+    "RevolvingUtilizationOfUnsecuredLines": "down",   # 카드·신용대출 사용액 줄이기
+    "DebtRatio": "down",                              # 부채 상환
+    "MonthlyIncome": "up",                            # 소득 증가
+    "NumberOfOpenCreditLinesAndLoans": "down",        # 쓰지 않는 카드·대출 정리
+    "telecom_payment_rate": "up",                     # 통신비 제때 내기
+    "utility_payment_rate": "up",                     # 공과금 제때 내기
+    "spending_consistency": "up",                     # 소비 패턴 일정하게
+    # regular_payment_count, app_login_frequency: 고정
+    #   "앱에 76번 로그인하세요" 같은 제안은 신용 개선 행동이 아니라 모델의 허점을 이용하는 것이라 제외
+}
+
+# 한 번에 늘릴 수 있는 최대 배수 (현실성: 월 소득 8,000 -> 22,000달러 같은 제안 방지)
+CF_MAX_UP_RATIO = {"MonthlyIncome": 1.3}
+# 한 번에 늘릴 수 있는 최대 폭 (현재 값 + 이 값까지)
+CF_MAX_UP_STEP = {"spending_consistency": 30}   # 소비 일관성은 최대 30점까지만 올리도록
+
+# 제안 값의 소수 자릿수 (feature_spec 의 kind 기준). ratio 2자리 = 1%p 단위
+CF_PRECISION = {"ratio": 2, "score": 0, "amount": 0, "count": 0}
+
+_cf_lock = threading.Lock()   # DiCE는 난수를 쓰므로 한 번에 하나씩     
+
+
+class _RawModel:
+    """원본 입력 DataFrame -> 전처리 -> 모델 확률. DiCE가 sklearn 모델처럼 호출
+    keep_missing: 사용자가 입력하지 않은 변수. DiCE에는 결측을 넣을 수 없어 중앙값으로 채워 넘기지만,
+                  모델에 넣기 직전 다시 NaN으로 돌려서 원래 예측(결측 처리)과 같게 만듦"""
+    def __init__(self, keep_missing=()):
+        self.keep_missing = list(keep_missing)
+
+    def predict_proba(self, raw: pd.DataFrame):
+        raw = raw.drop(columns=[CF_OUTCOME], errors="ignore").copy()
+        if self.keep_missing:
+            raw[self.keep_missing] = np.nan
+        return art["model"].predict_proba(raw_to_features(raw))
+
+    def predict(self, raw: pd.DataFrame):
+        cutoff = art["meta"]["best_model"]["approval_cutoff"]
+        return (self.predict_proba(raw)[:, 1] > cutoff).astype(int)
+
+
+def _cf_clean(df: pd.DataFrame, medians: dict) -> pd.DataFrame:
+    """DiCE용 학습 데이터 정리: 입력 범위 밖 값(96/98 코드, 금액이 들어간 DebtRatio 등)은 중앙값,
+    건수는 정수로 (DiCE가 소수점 없는 값을 제안하도록)"""
+    df = df.apply(pd.to_numeric, errors="coerce").copy()
+    for c in df.columns:
+        spec = FEATURE_SPEC.get(c, {})
+        if spec.get("min") is not None:
+            df.loc[df[c] < spec["min"], c] = np.nan
+        if spec.get("max") is not None:
+            df.loc[df[c] > spec["max"], c] = np.nan
+        df[c] = df[c].fillna(medians.get(c, df[c].median()))
+        if spec.get("kind") == "count":
+            df[c] = df[c].round().astype(int)
+    return df
 
 # matplotlib(pyplot)은 여러 요청이 동시에 그림을 그리면 그림이 섞일 수 있음 -> 한 번에 하나씩 그리도록 잠금
 # 한 요청이 처리되는 동안 다른 요청은 대기
@@ -375,11 +464,109 @@ def anova():
 
 
 #================================================================================================================================
-# 8. (POST 추정) 반사실적 설명
-# @router.get("/counterfactual", response_model = schema.counterfactual_response)
-# def counterfactual():
-#     # 추가 예정
-#     return
+# 8. (POST) 반사실적 설명: 거절된 고객이 무엇을 얼마나 바꾸면 승인될지 (DiCE)
+@router.post("/counterfactual", response_model = schema.counterfactual_response)
+def counterfactual(data : schema.counterfactual_request):
+    if art.get("cf_data") is None:
+        raise HTTPException(status_code = 503, detail = "반사실적 설명을 사용할 수 없습니다.")
+    import dice_ml
+
+    # (1) 지금 결과 - 이미 승인이면 찾을 필요 없음
+    try:
+        pred = predict_result(to_features(data))
+    except Exception as e:
+        raise HTTPException(status_code = 422, detail = f"전처리 실패: {e}")
+    if pred["approval_status"] == "APPROVED":
+        return {"original": pred, "counterfactuals": [], "varied_features": [],
+                "fixed_features": [], "message": "이미 승인된 고객입니다."}
+
+    # (2) DiCE에 넣을 고객 1명: 미입력 값은 중앙값으로 임시 채움 (모델에는 다시 NaN으로 들어감)
+    cols = art["cf_cols"]
+    raw = data.model_dump(by_alias=True, exclude={"total_cfs"})
+    query = pd.DataFrame([{c: raw.get(c) for c in cols}]).apply(pd.to_numeric, errors="coerce")
+    missing = [c for c in cols if pd.isna(query.at[0, c])]
+    for c in missing:
+        query.at[0, c] = art["pre"].medians_.get(c, 0.0)
+    for c in cols:
+        if FEATURE_SPEC.get(c, {}).get("kind") == "count":
+            query[c] = query[c].round().astype(int)
+
+    # (3) 바꿀 변수와 범위 (방향 제한, 미입력 변수 제외, 소득이 없으면 부채 비율 제외)
+    vary, ranges = [], {}
+    for c, direction in CF_ACTIONABLE.items():
+        if c not in cols or c in missing or (c == "DebtRatio" and "MonthlyIncome" in missing):
+            continue
+        cur = float(query.at[0, c])
+        lo = float(FEATURE_SPEC[c].get("min") or 0.0)
+        hi = max(art["cf_upper"][c], cur)
+        if direction == "down":
+            hi = cur
+        elif direction == "up":
+            lo = cur
+            if c in CF_MAX_UP_RATIO and cur > 0:
+                hi = min(hi, cur * CF_MAX_UP_RATIO[c])
+            if c in CF_MAX_UP_STEP:
+                hi = min(hi, cur + CF_MAX_UP_STEP[c])
+        if hi - lo > 1e-9:                   # 이미 끝값(예: 납부율 100%)이면 더 바꿀 수 없음
+            vary.append(c)
+            ranges[c] = [lo, hi]
+    fixed = [c for c in cols if c not in vary]
+
+    # (4) DiCE로 방안 찾기 (승인 기준 = approval_cutoff, 난수 고정 -> 같은 입력이면 같은 결과)
+    cutoff = art["meta"]["best_model"]["approval_cutoff"]
+    wrapper = _RawModel(keep_missing = missing)
+    cfs = None
+    if vary:
+        dice = dice_ml.Dice(art["cf_data"],
+                            dice_ml.Model(model = wrapper, backend = "sklearn", model_type = "classifier"),
+                            method = "random")
+        with _cf_lock:
+            try:
+                res = dice.generate_counterfactuals(
+                    query, total_CFs = data.total_cfs, desired_class = 0,   # 0 = 부도 아님(승인 쪽)
+                    features_to_vary = vary, permitted_range = ranges,
+                    stopping_threshold = cutoff, random_seed = 42)
+                cfs = res.cf_examples_list[0].final_cfs_df
+            except Exception as e:             # 방안을 못 찾으면 예외를 내기도 함
+                print(f"[api] 반사실적 설명 탐색 실패: {e}")
+
+    # (5) API 기준으로 다시 채점 -> 실제로 승인되는 방안만, 바뀐 항목만
+    options = []
+    if cfs is not None and len(cfs):
+        cfs = cfs.drop(columns=[CF_OUTCOME], errors="ignore")[cols].astype(float)
+        # DiCE가 상한을 조금 넘거나(예: 납부율 1.1) 자릿수가 어색한 값을 낼 수 있어 허용 범위로 자르고 반올림
+        for c in vary:
+            lo, hi = ranges[c]
+            digits = CF_PRECISION.get(FEATURE_SPEC[c].get("kind"), 2)
+            cfs[c] = cfs[c].clip(lo, hi).round(digits)
+        cfs = cfs.drop_duplicates()
+        for (_, row), p in zip(cfs.iterrows(), wrapper.predict_proba(cfs)[:, 1]):
+            result = result_from_p(float(p))
+            if result["approval_status"] != "APPROVED":
+                continue
+            changes = [{"feature": c, "feature_name_kr": label(c),
+                        "current_value": float(query.at[0, c]), "suggested_value": float(row[c]),
+                        "current_display": format_value(c, float(query.at[0, c])),
+                        "suggested_display": format_value(c, float(row[c]))}
+                       # 반올림 차이만 있는 항목(예: 0.9902 -> 0.99)은 바뀐 것으로 보지 않음
+                       for c in vary
+                       if abs(float(row[c]) - round(float(query.at[0, c]),
+                                                    CF_PRECISION.get(FEATURE_SPEC[c].get("kind"), 2))) > 1e-6]
+            if changes:
+                # 변화 폭: 항목마다 (바꾼 양 / 허용 범위 폭)의 합. 작을수록 실천하기 쉬운 방안
+                effort = sum(abs(ch["suggested_value"] - ch["current_value"]) / (ranges[ch["feature"]][1] - ranges[ch["feature"]][0])
+                             for ch in changes)
+                options.append({"changes": changes, "_effort": effort, **result})
+    options.sort(key=lambda o: (len(o["changes"]), o.pop("_effort")))   # 적게, 덜 바꾸는 순
+
+    for i, o in enumerate(options, start=1):
+        o["rank"] = i
+
+    msg = (f"아래 {len(options)}가지 중 하나를 실행하면 승인 기준을 넘을 것으로 예상됩니다. "
+           "(모델 기준 예상이며 실제 승인을 보장하지 않습니다)" if options
+           else "바꿀 수 있는 항목만으로는 승인 기준에 닿는 방안을 찾지 못했습니다.")
+    return {"original": pred, "counterfactuals": options, "varied_features": vary,
+            "fixed_features": fixed, "message": msg}
 
 # 호출시 등록된 엔드포인트만 복사 -> 파일 맨 아래로, 맨 마지막에 호출
 app.include_router(router)

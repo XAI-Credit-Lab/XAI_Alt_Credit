@@ -7,6 +7,8 @@
 # 거절 사유 top5 변수명, 현재 값, shap 기여도, 자연어 설명 반환
 # summary plot 이미지, dependence plot 이미지, waterfall plot 이미지
 
+# shap 이미지 -기호, 변수명 한글로 수정
+
 # ※ 본 시스템은 교육 목적으로 개발되었으며, 실제 금융 의사결정에 사용할 수 없습니다.
 
 from typing import Optional
@@ -17,7 +19,11 @@ import threading
 import shap
 import pandas as pd
 import numpy as np
+
+import matplotlib
+matplotlib.use("Agg")              # 화면 없는 서버(Docker)에서 그림 그리기
 import matplotlib.pyplot as plt
+import matplotlib.text             # 그림 안 글자(Text)를 찾을 때 사용
 
 from matplotlib import font_manager
 from src.data.feature_spec import build_rejection_reasons, label, format_value, FEATURE_SPEC
@@ -33,6 +39,14 @@ def _set_korean_font():
     plt.rcParams["axes.unicode_minus"] = False   # 한글 폰트에서 마이너스 기호가 깨지는 문제 방지
 
 _set_korean_font()
+
+def _fix_minus(fig):
+    """SHAP이 그림 안 글자에 넣는 유니코드 마이너스(−, U+2212)를 일반 '-'로 교체
+    (나눔고딕에 U+2212 글자가 없어 waterfall 막대 숫자 앞에 □가 보이던 문제)"""
+    for t in fig.findobj(matplotlib.text.Text):
+        text = t.get_text()
+        if "\u2212" in text:
+            t.set_text(text.replace("\u2212", "-"))
 
 class ModelExplainer:
     # 승인 고객의 거절 사유 최소 기여도 (Explainer 종류마다 SHAP 단위가 달라 따로 둠)
@@ -61,6 +75,7 @@ class ModelExplainer:
         self._kernel_lock = threading.Lock()
         # 원본 입력에 없는 값 복원용
         self.feature_means = pd.Series(raw_means) if raw_means is not None else background.mean()
+        self._has_raw_means = raw_means is not None   # 원본 평균을 받았을 때만 그래프를 원래 단위로 복원
         self.raw_scales = raw_scales or {}
         self.raw_medians = raw_medians or {}
         self.exclude_from_reasons = tuple(exclude_from_reasons)  # startswith()는 tuple을 받음
@@ -160,10 +175,26 @@ class ModelExplainer:
         base = base[self.class_index] if len(base) > 1 else base[0]
 
         return sv, float(base)
+
+        # 표준화 값 -> 원래 단위 (그래프 표시용). 원래 값 = 표준화 값 × 표준편차 + 평균
+    # raw_scales에 없는 변수(0/1 지시변수 등)는 그대로
+    def _to_original_units(self, X: pd.DataFrame) -> pd.DataFrame:
+        X = X.copy()
+        if not self._has_raw_means:
+            return X
+        for c in X.columns:
+            if c in self.raw_scales and c in self.feature_means.index:
+                X[c] = X[c] * self.raw_scales[c] + float(self.feature_means[c])
+        return X
+
+    # 그래프에 쓸 한글 변수 이름 (모델 컬럼 순서 그대로)
+    def _kr_names(self) -> list:
+        return [label(c) for c in self.columns]
     
     # API 응답(JSON)에 이미지를 담기 위해 matplotlib 그림을 문자열로 변환
     @staticmethod
     def _to_base64(fig, dpi: int = 120) -> str:
+        _fix_minus(fig)        # 저장 직전에 마이너스 기호 교체 (모든 그래프 공통)
         buf = io.BytesIO()
         fig.savefig(buf, format = "png", dpi = dpi, bbox_inches = "tight")
         plt.close(fig)
@@ -237,7 +268,9 @@ class ModelExplainer:
     def plot_summary(self, max_display: int = 15) -> str:
         values = self.global_shap()
         plt.figure()
-        shap.summary_plot(values, self._global_X, max_display = max_display, show = False)
+        # 색(값의 높고 낮음)은 변수 안에서의 상대값이라 표준화 값 그대로, 이름만 한글로
+        shap.summary_plot(values, self._global_X, feature_names = self._kr_names(), 
+                          max_display = max_display, show = False)
         return self._to_base64(plt.gcf())
 
     # ------------------------------------------------------------------
@@ -257,12 +290,18 @@ class ModelExplainer:
             raise ValueError(f"모델에 없는 변수: {unknown}")
 
         values = self.global_shap()
+        X_disp = self._to_original_units(self._global_X)   # x축·색 막대를 원래 단위로 (SHAP 값은 그대로)
+        kr_names = self._kr_names()
+        # feature_names를 한글로 넘기므로 변수는 영어 이름 대신 번호(index)로 지정
+        if isinstance(interaction_index, str) and interaction_index in self.columns:
+            interaction_index = self.columns.index(interaction_index)
         images = {}
         for name in features:
             fig, ax = plt.subplots(figsize=(7, 5))
-            shap.dependence_plot(name, values, self._global_X,
+            shap.dependence_plot(self.columns.index(name), values, X_disp,
+                                 feature_names=kr_names,
                                  interaction_index=interaction_index, ax=ax, show=False)
-            images[name] = self._to_base64(fig)
+            images[name] = self._to_base64(fig)   # dict 키는 영어 그대로 (API 응답 형식 유지)
         return images
 
     # ------------------------------------------------------------------
