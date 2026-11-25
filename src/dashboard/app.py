@@ -432,7 +432,6 @@ def tab_metrics():
                  "판정": "✅ 통과" if m[k] >= g else "❌ 미달"} for k, n, g in goals]
         st.markdown("##### 성능 목표")
         st.dataframe(pd.DataFrame(rows), hide_index=True, **STRETCH)
-        st.caption("씬파일러 AUC 향상(+0.03 이상)과 PSI(0.1 미만)는 /metrics 응답에 포함되지 않아 이 탭에서 표시하지 않습니다.")
         h, _ = api_get("/health")
         if h:
             st.caption(f"모델: {h['model_version']} · 서버 시각 {h['timestamp']}")
