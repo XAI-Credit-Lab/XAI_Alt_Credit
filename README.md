@@ -77,7 +77,7 @@ python -m src.statistics.anova
 # 5) API와 대시보드 (각각 다른 터미널에서)
 uvicorn src.api.main:app --port 8000
 streamlit run src/dashboard/app.py
-# 6) 테스트 (164개)
+# 6) 테스트 (166개)
 pytest tests/
 ```
 
@@ -90,7 +90,7 @@ XAI_Simulator/
 ├── docker-compose.yml          # MLflow(:5000) + API(:8000) + 대시보드(:8501) 통합 실행
 ├── README.md
 ├── compare_meta.py             # v1.2·v1.3 모델 메타 지표 비교 (보조 스크립트)
-├── .streamlit/config.toml      # 대시보드 테마 (로컬 실행 시 적용)
+├── .streamlit/config.toml      # 대시보드 테마 (로컬·Docker 실행 모두 적용)
 ├── docs/
 │   └── experiment_report.pdf   # 실험 리포트
 ├── src/
@@ -117,7 +117,7 @@ XAI_Simulator/
 │                               #   sensitive_*.csv  : 성별·연령대·씬파일러 여부 (모델 피처 아님, 공정성·씬파일러 평가 전용)
 ├── reports/                    # 공정성 리포트·완화 전후 비교표, ANOVA 결과, 데이터 점검 결과
 ├── mlflow_data/                # MLflow 실험 기록 공유용 (mlflow.db + 모델·전처리기 아티팩트, v1.1·v1.3)
-└── tests/                      # pytest 단위 테스트 164개
+└── tests/                      # pytest 단위 테스트 166개
 ```
 
 ## 5. 환경 변수
