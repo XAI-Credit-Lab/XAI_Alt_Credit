@@ -27,17 +27,22 @@ KST = timezone(timedelta(hours=9))   # 한국 표준시
 
 MODEL_DIR = PROJECT_ROOT / "models"
 
+# model_meta_v{버전}.json  (예: model_meta_v1.3.json -> "1.3")
+META_PATTERN = re.compile(r"model_meta_v(\d+(?:\.\d+)*)\.json$")
+
 def latest_meta_path():
-    # models/의 model_meta_v{버전}.json 중 버전 숫자가 가장 큰 파일 (v1.10 > v1.9, 숫자 비교)
-    pattern = re.compile(r"model_meta_v(\d+(?:\.\d+)*)\.json$")
     candidates = []
     for p in MODEL_DIR.glob("model_meta_v*.json"):
-        m = pattern.match(p.name)
+        m = META_PATTERN.match(p.name)
         if m:
             candidates.append((tuple(int(x) for x in m.group(1).split(".")), p))
     if not candidates:
         raise FileNotFoundError(f"{MODEL_DIR}에 model_meta_v*.json 파일이 없습니다.")
     return max(candidates)[1]
+
+def meta_version(path) -> str:
+    # 메타 파일 이름에서 버전 추출: model_meta_v1.3.json -> "v1.3"
+    return "v" + META_PATTERN.match(path.name).group(1)
 
 def unwrap_model(model):
     # SMOTE 선택돼도 TreeExplainer 사용 가능하도록
@@ -62,6 +67,8 @@ async def lifespan(app: FastAPI):
     print(f"[api] 모델 메타 {meta_path.name} / 전처리기 {pre_file} / 모델 {meta['best_model']['file']}")
     # {'meta': 메타 파일, 'pre': 전처리기 파일} 형식 됨
     art["meta"] = meta # model_meta.json
+    # /health 표시용: "알고리즘 버전" (예: "lightgbm v1.3")
+    art["model_version"] = f'{meta["best_model"]["algorithm"]} {meta_version(meta_path)}'
     art["model"] = joblib.load(MODEL_DIR / meta["best_model"]["file"])
     art["pre"] = pre # 전처리기 파일
     art["num_cols"] = list(pre.numeric_cols_)       # 전처리기에서 수치형 원본 컬럼
@@ -295,7 +302,7 @@ def global_plots() -> dict:
 def health():
     return {
         "status" : "healthy",
-        "model_version" : art["meta"]["best_model"]["algorithm"],
+        "model_version" : art["model_version"],   # 예: "lightgbm v1.3"
         "timestamp" : datetime.now(KST).isoformat(timespec="seconds")
     }
 
@@ -453,7 +460,10 @@ def metrics():
         "ks" : result["test_ks"],
         "precision": result["test_precision"],
         "recall" : result["test_recall"],
-        "f1" : result["test_f1"]
+        "f1" : result["test_f1"],
+        # 이전 버전 메타에는 없을 수 있음 -> 없으면 None(null)
+        "thin_filer_auc_uplift": result.get("thin_filer_auc_uplift"),
+        "psi": result.get("psi"),
     }
 
 #================================================================================================================================
