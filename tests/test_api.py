@@ -4,7 +4,7 @@ FastAPI 엔드포인트 통합 테스트 (서버를 띄우지 않고 TestClient 
 저장된 모델·전처리기·분할 데이터·ANOVA 결과가 있을 때만 실행 (없으면 건너뜀)
 
 확인하는 것
-  1) /health, /metrics, /anova 가 메타 파일과 같은 값을 돌려줌
+  1) /health(알고리즘 + 메타 버전), /metrics(씬 파일러 AUC 향상·PSI 포함), /anova 가 메타 파일과 같은 값을 돌려줌
   2) /predict: 신용 점수·승인 여부·등급이 부도확률과 서로 맞음
   3) /explain: /predict 와 같은 판정, 거절 사유 형식, 같은 입력이면 같은 결과
   4) 월 소득이 없으면 부채 비율이 결과에 영향을 주지 않고, 화면에도 그렇게 안내
@@ -74,9 +74,12 @@ def _ok(resp):
 # 1) 상태·메타 값
 # ----------------------------------------------------------------------
 def test_health(client, meta):
+    from src.api.main import latest_meta_path, meta_version
     body = _ok(client.get("/health"))
     assert body["status"] == "healthy"
-    assert body["model_version"] == meta["best_model"]["algorithm"]
+    # "알고리즘 버전" 형식 (예: "lightgbm v1.3"), 버전은 서버가 불러온 최신 메타 파일 기준
+    expected = f'{meta["best_model"]["algorithm"]} {meta_version(latest_meta_path())}'
+    assert body["model_version"] == expected
 
 
 def test_metrics_match_meta(client, meta):
@@ -85,6 +88,13 @@ def test_metrics_match_meta(client, meta):
     for key, meta_key in [("auc", "test_auc"), ("ks", "test_ks"), ("f1", "test_f1"),
                           ("precision", "test_precision"), ("recall", "test_recall")]:
         assert body[key] == pytest.approx(fm[meta_key]), key
+    # 추가 지표: 메타에 있으면 같은 값, 없으면 null
+    for key in ("thin_filer_auc_uplift", "psi"):
+        assert key in body, key                                   # 응답 키는 항상 있어야 함 (스키마 확인)
+        if fm.get(key) is None:
+            assert body[key] is None, key
+        else:
+            assert body[key] == pytest.approx(fm[key]), key
 
 
 def test_anova_has_both_tests(client):

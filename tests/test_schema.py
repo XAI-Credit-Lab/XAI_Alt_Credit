@@ -6,7 +6,8 @@ API 입력·응답 스키마 테스트 (서버를 띄우지 않고 pydantic 검�
   1) 정상 입력은 통과하고, 범위를 벗어난 값·오타 필드는 거부 (422의 원인)
   2) 입력 범위가 feature_spec.py, 전처리 기준과 같음
   3) 연체 컬럼은 alias(원래 컬럼명)와 변수명 둘 다 받음
-  4) 거절 사유 응답의 선택 필드(rank, reference_value 등)는 없어도 오류가 나지 않음
+  4) 거절 사유 응답의 선택 필드(rank, reference_value 등)는 없어도 오류가 나지 않음,
+     /metrics 의 추가 지표(씬 파일러 AUC 향상·PSI)도 없으면 null
   5) 반사실적 설명 요청·응답 스키마
 
 실행: 프로젝트 최상위 폴더에서  pytest tests/test_schema.py -v
@@ -162,6 +163,21 @@ def test_reason_optional_fields_default_to_none():
 
 def test_explain_response_without_total_is_ok():
     schema.explain_response(approval_status="APPROVED", rejection_reasons=[], shap_values={})
+
+
+METRICS = {"auc": 0.88, "ks": 0.61, "precision": 0.53, "recall": 0.50, "f1": 0.52}
+
+
+def test_metrics_response_new_fields_optional():
+    """이전 버전 메타에는 씬 파일러 AUC 향상·PSI가 없음 -> 없어도 오류 없이 null"""
+    resp = schema.metrics_response(**METRICS)
+    assert resp.thin_filer_auc_uplift is None and resp.psi is None
+
+
+def test_metrics_response_with_new_fields():
+    resp = schema.metrics_response(**METRICS, thin_filer_auc_uplift=0.1134, psi=0.0005)
+    assert resp.thin_filer_auc_uplift == pytest.approx(0.1134)
+    assert resp.psi == pytest.approx(0.0005)
 
 
 # ----------------------------------------------------------------------
