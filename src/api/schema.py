@@ -130,6 +130,8 @@ class metrics_response(BaseModel):
     precision: float
     recall : float
     f1 : float
+    thin_filer_auc_uplift: Optional[float] = None   # 씬 파일러 AUC 향상 (대안 데이터 추가 효과, 예: +0.1134)
+    psi: Optional[float] = None                     # 점수 분포 안정성 PSI (0.1 미만: 안정)
 
 
 # 7. (GET) ANOVA-통계 검증
