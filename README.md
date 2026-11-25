@@ -57,8 +57,10 @@ Python 3.14 기준으로 개발했습니다(Docker 이미지와 동일).
 ```bash
 python -m venv .venv
 # Windows: .venv\Scripts\activate  /  macOS·Linux: source .venv/bin/activate
-pip install -r src/api/requirements.txt -r src/dashboard/requirements.txt mlflow==3.17.0 pytest
+pip install -r src/api/requirements.txt -r src/dashboard/requirements.txt mlflow==3.17.0 pytest httpx
 ```
+
+`httpx`는 API 테스트(`tests/test_api.py`, `tests/test_counterfactual.py`)의 FastAPI `TestClient`에 필요합니다. 설치하지 않으면 두 파일의 테스트가 건너뛰어집니다(skipped).
 
 ```bash
 # 0) MLflow 서버 먼저 실행 (학습 기록이 mlflow_data/에 저장되도록)
