@@ -86,7 +86,7 @@ pytest tests/
 ## 4. 디렉토리 구조
 
 ```
-XAI_Simulator/
+XAI_Alt_Credit/
 ├── docker-compose.yml          # MLflow(:5000) + API(:8000) + 대시보드(:8501) 통합 실행
 ├── README.md
 ├── compare_meta.py             # v1.2·v1.3 모델 메타 지표 비교 (보조 스크립트)
